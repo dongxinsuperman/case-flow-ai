@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用边界与公开文档
+    url: https://github.com/dongxinsuperman/case-flow-ai#readme
+    about: 请先确认需求/缺陷平台、执行器和模型的支持边界；非飞书平台需要自行二次开发。
