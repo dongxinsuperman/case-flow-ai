@@ -1,0 +1,39 @@
+{
+  "_readme": "【模板·提交bug到飞书项目(issue)】复制为同目录 feishu_issue.json 按真实值填写(已 gitignore)。密钥仍在 backend/.env。理念:字段清单/顺序/必填/选项/默认值全部从飞书『建单元信息』(GET /open_api/{project}/work_item/{type}/meta)实时拉取并复刻,这里只配少量映射:模板ID + 标题/描述/附件字段 + 关联需求字段 + 一张『字段→数据源』小映射(把我们手里的值塞进哪个飞书字段)。其余字段一律用飞书自带默认值,不凭空造。",
+
+  "spaces": [
+    {
+      "project_key": "<空间 simple_name 或长 key>",
+      "work_item_type": "issue",
+      "template_id": 0,
+      "_template_id": "↑ 缺陷模板ID(必填)。list_workitem_field_config 里 field_key=template 的 option_id。",
+
+      "title_field": "name",
+      "description_field": "description",
+      "attachment_field": "multi_attachment",
+      "_special_fields": "↑ 标题/描述/附件三个字段单独处理:标题→润色后的缺陷标题;描述→下面 description_include 拼;附件→诊断关键截图后台异步补传。",
+
+      "description_include": ["diagnosis", "path", "preconditions", "steps", "expected", "report_link"],
+      "_description_include": "↑ 描述里包含哪些段、按此顺序渲染(诊断原因证据置顶,一眼看到问题;再层级/前置/步骤/预期/报告链接)。可任意增删/调序。",
+
+      "link_requirement_field": "<关联需求字段 key，如 _field_linked_story>",
+      "_link_requirement_field": "↑ 把 bug 关联到对应需求(story)的字段;留空则不关联。",
+      "link_requirement_field_type": "work_item_related_select",
+      "_link_requirement_field_type": "↑ 可选。关联字段类型，默认单选 work_item_related_select；如果飞书字段是多选关联，填 work_item_related_multi_select。",
+
+      "field_sources": {
+        "priority": { "source": "model" },
+        "tags": { "source": "model" },
+        "<报告人字段，如 issue_reporter>": { "source": "current_user" },
+        "<经办人字段，如 issue_operator>": { "source": "requirement_roles", "roles": ["frontend", "backend"] },
+        "<发现阶段字段，如 issue_stage>": { "source": "fixed", "value": "<option_id，如 自动化阶段>" },
+        "<预期结果字段>": { "source": "case_expected" },
+        "<实际结果字段>": { "source": "diagnosis_reason" },
+        "<所属月份字段>": { "source": "current_month" },
+        "<中文发现月份字段>": { "source": "current_month_zh" },
+        "planning_sprint": { "source": "requirement_field", "from": "planning_sprint" }
+      },
+      "_field_sources": "↑ 只配『我们确有的值』往哪个飞书字段填,key=飞书 field_key。source 取值:model(模型按飞书该字段的 options 挑；不绑定 Case priority，模型不命中不自动选第一个) / current_user(报告人=当前用户) / requirement_roles(配 roles,带需求里的前端/后端人) / requirement_field(配 from,搬需求字段) / case_expected(case预期) / case_steps(case步骤) / diagnosis_reason(诊断失败原因) / current_month(当前年月YY-MM) / current_month_zh(当前中文年月，如26年6月) / fixed(配 value=option_id)。没配到的字段一律沿用飞书默认值。select/multi_select/text/multi_text 在弹窗可改,人员/关联/附件只读展示。"
+    }
+  ]
+}

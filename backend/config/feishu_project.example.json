@@ -1,0 +1,64 @@
+{
+  "_readme": "【模板·假数据+说明】复制本文件为同目录 feishu_project.json，把假值换成部署方真实值（真实文件已 .gitignore，不会提交）。密钥放 backend/.env 的 CASE_FLOW_FEISHU_PROJECT_*，不放这里。每个字段下方紧跟一行 _xxx 说明。详见 docs/飞书项目接入.md。",
+
+  "work_item_type": "story",
+  "_work_item_type": "↑ 要拉的工作项类型 key。story=需求，issue=缺陷。",
+
+  "default_sprint_field": "planning_sprint",
+  "_default_sprint_field": "↑ 全局默认迭代/排期字段 key。大多数飞书项目空间用 planning_sprint；空间不写 sprint_field 时自动使用它。某空间确实没有迭代概念时，在该空间显式写 sprint_field: null 关闭。",
+
+  "pull": {
+    "created_after": "2026-06-01",
+    "_created_after": "↑ 只拉该日期(含)之后创建的工作项(服务端过滤)。留空=不限时间。",
+    "page_size": 50,
+    "_page_size": "↑ 每页条数，自动翻页直到拉完。一般 50。",
+    "max_items": 0,
+    "_max_items": "↑ 每空间单次最多拉多少条。0=不限(真·全拉)；调试想限速才填正数如 200。"
+  },
+
+  "spaces": [
+    {
+      "project_key": "demo_app",
+      "_project_key": "↑ 空间标识：simple_name(url 上的短名，如 demo_app) 或 24 位长 key 都行。",
+      "name": "示例·App空间",
+      "_name": "↑ 空间中文名，只是给人看的标签，不参与逻辑。",
+      "work_item_type": "story",
+      "_space_work_item_type": "↑ 可选。单空间覆盖全局 work_item_type；不填则沿用全局。注意 OpenAPI filter 有时要工作项长 type_key，不是 URL 上的 api_name。",
+      "work_item_url_type": "story",
+      "_space_work_item_url_type": "↑ 可选。页面 URL 用的工作项类型别名；仅当 work_item_type 使用长 type_key、但页面链接要短 api_name 时填写。",
+      "role_map": {
+        "tester":   ["role_qa1", "role_qa2"],
+        "frontend": ["role_ios", "role_android", "role_fe"],
+        "backend":  ["role_server"]
+      },
+      "_role_map": "↑ 角色映射：把本空间飞书里的 role_id 对到我们的标准概念。【可填多个 role_id，会合并成同一个概念并去重】——比如他们把 iOS/安卓/前端 拆成三个角色，按我们的标准都算‘前端’，就全列进 frontend。tester=测试人员(=顶部‘当前用户’身份，唯一来源；多个测试角色也可合并)；某概念没有就留空 []。role_id 去飞书项目后台角色配置 或 MCP list_workitem_role_config 查。",
+      "status_in_testing_state_keys": ["abc123testing"],
+      "_status_in_testing_state_keys": "↑ 本空间‘测试中’状态的 state_key(是码不是中文，可填多个)。只有命中的需求才进‘我的进行中任务’。去飞书项目后台工作流配置查；留空=该空间先不按状态过滤(都先算测试中)。",
+      "sprint_field": "planning_sprint",
+      "_sprint_field": "↑ 可选，覆盖全局 default_sprint_field。卡片会展示‘迭代排期’并支持按它筛选。该空间没有迭代概念就设 null。"
+    },
+    {
+      "project_key": "demo_data",
+      "name": "示例·数据空间(只有测试角色)",
+      "role_map": {
+        "tester":   ["QA"],
+        "frontend": [],
+        "backend":  []
+      },
+      "_role_map": "↑ 第二个示例：有的空间测试角色 role_id 就是短码 QA/FE 这种；前后端没有就留空 []。",
+      "status_in_testing_state_keys": ["state_test", "state_testing2"],
+      "_status_in_testing_state_keys": "↑ 可以填多个 state_key，任一命中即算测试中。",
+      "sprint_field": null,
+      "_sprint_field": "↑ 显式关闭本空间迭代映射；不写则沿用全局 default_sprint_field。"
+    }
+  ],
+  "_spaces": "↑ 要实际拉取的空间(部门)逐个列在这里，每空间一段(参照上面两个示例)。不想拉某空间就删掉那一段。",
+
+  "available_spaces": [
+    { "project_key": "<demo_app_project_key>", "simple_name": "demo_app", "name": "示例·App空间" },
+    { "project_key": "<demo_data_project_key>", "simple_name": "demo_data", "name": "示例·数据空间" }
+  ],
+  "_available_spaces": "↑ 可选的空间参考清单(缓存用，方便往 spaces 里挑)。可用 MCP search_project_info 一次拉全。不影响拉取逻辑。",
+
+  "_mapping_principle": "原则：纯映射、不靠名字猜。测试人员(tester)→role_map(role_id)，测试中→status_in_testing_state_keys(state_key)，迭代排期→default_sprint_field/sprint_field(字段 key)。各空间角色/状态叫法可能完全不同(测试叫 QA/测试，状态叫 开始/投送/…)，我们只维护‘我们的标准→他们的码’，代码运行时只比对码/字段。"
+}

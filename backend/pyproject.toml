@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "case-flow"
+version = "0.1.0"
+description = "AI-assisted test case workbench"
+requires-python = ">=3.11,<3.13"
+readme = "README.md"
+dependencies = [
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8,<3",
+    "pydantic-settings>=2.4,<3",
+    "SQLAlchemy[asyncio]>=2.0,<2.1",
+    "asyncpg>=0.29,<1",
+    "alembic>=1.13,<2",
+    "python-dotenv>=1.0,<2",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27,<1",
+    "openai>=1.0",
+    "psycopg2-binary>=2.9",
+    "structlog>=24.1,<25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+timeout = 300
+testpaths = ["tests"]

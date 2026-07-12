@@ -1,0 +1,13 @@
+{
+  "levels": [
+    { "index": 1, "role": "suite", "displayLabel": "测试集" },
+    { "index": 2, "role": "path", "displayLabel": "模块" },
+    { "index": 3, "role": "path", "displayLabel": "功能点" },
+    { "index": 4, "role": "path", "displayLabel": "测试功能点" },
+    { "index": 5, "role": "case_title", "displayLabel": "测试标题" },
+    { "index": 6, "role": "preconditions", "displayLabel": "前置条件" },
+    { "index": 7, "role": "steps", "displayLabel": "操作步骤" },
+    { "index": 8, "role": "expected", "displayLabel": "预期结果" }
+  ],
+  "trimSeparators": ["：", ":"]
+}

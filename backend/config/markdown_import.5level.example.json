@@ -1,0 +1,11 @@
+
+{
+  "levels": [
+    { "index": 1, "role": "suite", "displayLabel": "测试集" },
+    { "index": 2, "role": "case_title", "displayLabel": "测试标题" },
+    { "index": 3, "role": "preconditions", "displayLabel": "前置条件" },
+    { "index": 4, "role": "steps", "displayLabel": "操作步骤" },
+    { "index": 5, "role": "expected", "displayLabel": "预期结果" }
+  ],
+  "trimSeparators": ["：", ":"]
+}
