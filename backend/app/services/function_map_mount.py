@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,11 +48,16 @@ _SOURCE_QUICK = "快速会话选择"
 
 @dataclass
 class TopLevelContext:
-    """顶层显式挂载编译结果。excluded_asset_ids 是适用端不匹配被排除的资产。"""
+    """顶层显式挂载编译结果。excluded_asset_ids 是适用端不匹配被排除的资产。
+
+    maps 与 context 来自同一批注入资产，供 Hybrid 主脑按 targets/description 做选机的
+    渐进式发现；正文仍只在它按 ID 主动读取时使用。
+    """
 
     context: str = ""
     injected_asset_ids: list[int] = field(default_factory=list)
     excluded_asset_ids: list[int] = field(default_factory=list)
+    maps: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _format_asset_block(asset: FunctionMapAsset, source: str) -> str:
@@ -118,17 +124,29 @@ def _assemble_context(
     injected: list[int] = []
     excluded: list[int] = []
     blocks: list[str] = []
+    maps: list[dict[str, Any]] = []
     for asset_id in sorted(assets):
         asset = assets[asset_id]
         if allowed & set(asset.targets or []):
             injected.append(asset_id)
             blocks.append(_format_asset_block(asset, sources[asset_id]))
+            maps.append(
+                {
+                    "asset_id": asset.id,
+                    "title": asset.title,
+                    "description": (getattr(asset, "description", "") or "").strip(),
+                    "targets": list(asset.targets or []),
+                    "source": sources[asset_id],
+                    "content": (asset.content or "").strip(),
+                }
+            )
         else:
             excluded.append(asset_id)
     return TopLevelContext(
         context="\n\n".join(blocks),
         injected_asset_ids=injected,
         excluded_asset_ids=excluded,
+        maps=maps,
     )
 
 

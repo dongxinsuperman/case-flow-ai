@@ -27,6 +27,11 @@ class HybridSubmitItemIn(BaseModel):
         validation_alias=AliasChoices("functionMapContext", "function_map_context"),
         serialization_alias="functionMapContext",
     )
+    function_maps: list[dict[str, Any]] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("functionMaps", "function_maps"),
+        serialization_alias="functionMaps",
+    )
     platforms: list[str] = Field(default_factory=list)
 
 
@@ -48,6 +53,11 @@ class HybridSubmitIn(BaseModel):
         default="",
         validation_alias=AliasChoices("functionMapContext", "function_map_context"),
         serialization_alias="functionMapContext",
+    )
+    function_maps: list[dict[str, Any]] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("functionMaps", "function_maps"),
+        serialization_alias="functionMaps",
     )
     cache_mode: str = Field(
         default="off",

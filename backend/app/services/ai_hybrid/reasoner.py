@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.services.ai_hybrid import function_map_ctx
 from app.services.ai_hybrid.llm import llm_client
 from app.services.ai_hybrid.prompts import ORCHESTRATOR_SYSTEM_PROMPT, TOOL_SPECS
 from app.services.ai_hybrid.schemas import HybridDecision, HybridInput, HybridToolResult
@@ -23,6 +24,8 @@ async def react_step(
     inp: HybridInput,
     history: list[dict[str, Any]],
     settings: Any,
+    aiphone_devices: list[dict[str, Any]] | None = None,
+    aiphone_devices_error: str | None = None,
 ) -> HybridDecision | None:
     """标准 ReAct 单步：模型看 goal + case + 工具规格 + 历史，直接给下一步决策。
 
@@ -43,13 +46,18 @@ async def react_step(
             "expected_result": inp.expected_result,
             "source_ref": inp.source_ref,
         },
+        "function_map_catalog": function_map_ctx.build_catalog(
+            inp.function_maps, inp.function_map_context or ""
+        ),
+        "aiphone_devices": aiphone_devices or [],
+        "aiphone_devices_error": aiphone_devices_error or "",
         "tools": TOOL_SPECS,
         "history": clean_history,
         "decision_schema": {
             "format": "Return one valid json object only.",
             "thought": "string",
             "action": "call_tool | finish",
-            "tool": "ai_api | ai_web | ai_phone | report_reader（action=call_tool 必填）",
+            "tool": " | ".join(str(tool["name"]) for tool in TOOL_SPECS) + "（action=call_tool 必填）",
             "tool_input": "必须匹配所选 tool 的 input_schema",
             "tool_input_by_tool": {
                 str(tool["name"]): tool.get("input_schema", {}) for tool in TOOL_SPECS
@@ -106,18 +114,21 @@ def observe(result: HybridToolResult) -> dict[str, Any]:
     """
     raw = dict(result.raw or {})
     image_data_uri = raw.pop("image_data_uri", None)
+    # Function Map 是设备绑定的权威证据，不能把写在正文后段的绑定静默截断；其他工具仍
+    # 使用既有的上限防止大报告撑爆上下文。
+    max_str = None if result.tool == "function_map" else _MAX_STR
     observation: dict[str, Any] = {
         "tool": result.tool,
         "status": result.status,
         "reason": result.reason,
         "report_url": result.report_url,
         "summary_report_url": result.summary_report_url,
-        "raw": _compact(raw),
+        "raw": _compact(raw, max_str),
     }
     if image_data_uri:
         observation["_image"] = {"imgNo": raw.get("imgNo"), "data_uri": image_data_uri}
     if result.evidence:
-        observation["evidence"] = _compact(result.evidence)
+        observation["evidence"] = _compact(result.evidence, max_str)
     return observation
 
 
@@ -158,21 +169,21 @@ def _build_user_content(payload_text: str, attachments: list[dict[str, Any]]) ->
     return content
 
 
-def _compact(value: Any) -> Any:
+def _compact(value: Any, max_str: int | None = _MAX_STR) -> Any:
     if isinstance(value, dict):
         compact: dict[str, Any] = {}
         for key, item in value.items():
             # request/submitted 是提交回执，对下一步决策没帮助，去掉减噪。
             if key in {"request", "submitted"}:
                 continue
-            compact[str(key)] = _compact(item)
+            compact[str(key)] = _compact(item, max_str)
         return compact
     if isinstance(value, list):
-        return [_compact(item) for item in value]
+        return [_compact(item, max_str) for item in value]
     if isinstance(value, str):
-        if len(value) <= _MAX_STR:
+        if max_str is None or len(value) <= max_str:
             return value
-        return value[:_MAX_STR] + f"\n…（已截断，共 {len(value)} 字，可 call_tool report_reader 取全文）"
+        return value[:max_str] + f"\n…（已截断，共 {len(value)} 字，可 call_tool report_reader 取全文）"
     return value
 
 

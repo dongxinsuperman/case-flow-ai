@@ -12,10 +12,37 @@ from app.services.ai_hybrid.tools import (
     AIAPITool,
     AIPhoneTool,
     AIWebTool,
+    FunctionMapTool,
     ReportReaderTool,
     _render_run_content,
     _structured_fields,
 )
+
+
+def _locked_phone_input(alias: str, *, steps: str = "老师创建班级") -> HybridToolInput:
+    return HybridToolInput(
+        tool="ai_phone",
+        input=steps,
+        raw={
+            "title": "老师创建班级",
+            "preconditions": "关闭 App「示例 App」（杀进程）后重新打开 App「示例 App」",
+            "steps": steps,
+            "expected": "班级创建成功",
+            "device_alias": alias,
+        },
+    )
+
+
+def _lock_settings(**overrides: object) -> SimpleNamespace:
+    settings: dict[str, object] = {
+        "aiphone_base_url": "http://127.0.0.1:8000",
+        "public_base_url": "http://127.0.0.1:8800",
+        "hybrid_max_wall_seconds": 60,
+        "hybrid_device_wait_interval_seconds": 1,
+        "hybrid_device_wait_max_attempts": 3,
+    }
+    settings.update(overrides)
+    return SimpleNamespace(**settings)
 
 
 def test_structured_fields_parses_four_sections() -> None:
@@ -319,6 +346,127 @@ async def test_aiphone_tool_submits_default_android_when_platform_absent(
     )
     assert result.raw["execution_strategy"]["platform"] == "android"
     assert result.raw["execution_strategy"]["source"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_aiphone_hard_lock_submits_only_the_requested_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_list_devices() -> AIPhoneDeviceListOut:
+        return AIPhoneDeviceListOut(
+            source="service",
+            devices=[
+                {"alias": "teacher-device", "serial": "a", "platform": "android", "occupancy": "idle"},
+                {"alias": "student-device", "serial": "b", "platform": "android", "occupancy": "idle"},
+            ],
+        )
+
+    import asyncio
+
+    ready = asyncio.Event()
+    ready.set()
+    captured: dict[str, object] = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, str]:
+            return {"submissionId": "sub-1"}
+
+    class _Client:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *_args: object) -> bool:
+            return False
+
+        async def post(self, _url: str, json: object = None) -> _Resp:
+            captured["payload"] = json
+            return _Resp()
+
+    monkeypatch.setattr(executions, "list_aiphone_devices", fake_list_devices)
+    monkeypatch.setattr(child_wait, "register", lambda *_args, **_kwargs: ready)
+    monkeypatch.setattr(child_wait, "take_result", lambda _token: {"state": "success"})
+    monkeypatch.setattr(child_wait, "forget", lambda _token: None)
+    monkeypatch.setattr("app.services.ai_hybrid.tools.httpx.AsyncClient", _Client)
+
+    result = await AIPhoneTool().run(_locked_phone_input("teacher-device"), _lock_settings())
+    assert result.status == "success"
+    item = captured["payload"]["items"][0]  # type: ignore[index]
+    assert item["deviceAliasPools"] == {"android": ["teacher-device"]}
+    assert result.raw["resource"]["state"] == "locked"
+
+
+@pytest.mark.asyncio
+async def test_aiphone_hard_lock_never_reassigns_unavailable_or_busy_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_list_devices() -> AIPhoneDeviceListOut:
+        calls["count"] += 1
+        return AIPhoneDeviceListOut(
+            source="service",
+            devices=[{"alias": "teacher-device", "serial": "a", "platform": "android", "occupancy": "busy"}],
+        )
+
+    async def no_wait(_seconds: float) -> None:
+        pass
+
+    def must_not_submit(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("hard-locked device busy: must not submit to another device")
+
+    monkeypatch.setattr(executions, "list_aiphone_devices", fake_list_devices)
+    monkeypatch.setattr("app.services.ai_hybrid.tools.asyncio.sleep", no_wait)
+    monkeypatch.setattr(child_wait, "register", must_not_submit)
+    result = await AIPhoneTool().run(_locked_phone_input("teacher-device"), _lock_settings())
+    assert result.status == "needs_human"
+    assert result.reason == "device_busy_timeout"
+    assert calls["count"] == 3
+    assert result.raw["submitted"] is False
+
+
+@pytest.mark.asyncio
+async def test_aiphone_hard_lock_blocks_missing_or_platform_conflicting_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def missing() -> AIPhoneDeviceListOut:
+        return AIPhoneDeviceListOut(
+            source="service",
+            devices=[{"alias": "other", "serial": "b", "platform": "android", "occupancy": "idle"}],
+        )
+
+    monkeypatch.setattr(executions, "list_aiphone_devices", missing)
+    missing_result = await AIPhoneTool().run(_locked_phone_input("teacher-device"), _lock_settings())
+    assert missing_result.status == "needs_human"
+    assert missing_result.reason == "device_not_available"
+    assert missing_result.raw["submitted"] is False
+
+    async def platform_conflict() -> AIPhoneDeviceListOut:
+        return AIPhoneDeviceListOut(
+            source="service",
+            devices=[{"alias": "teacher-device", "serial": "a", "platform": "android", "occupancy": "idle"}],
+        )
+
+    monkeypatch.setattr(executions, "list_aiphone_devices", platform_conflict)
+    conflict = await AIPhoneTool().run(
+        _locked_phone_input("teacher-device", steps="在 iOS 设备上执行登录验证"), _lock_settings()
+    )
+    assert conflict.status == "needs_human"
+    assert conflict.reason == "device_platform_conflict"
+    assert conflict.raw["submitted"] is False
+
+
+@pytest.mark.asyncio
+async def test_function_map_tool_reads_structured_map_without_defaulting() -> None:
+    maps = [{"asset_id": 1, "title": "账号绑定", "targets": ["app"], "content": "老师→teacher-device"}]
+    result = await FunctionMapTool().run(
+        HybridToolInput(tool="function_map", input="", function_maps=maps, raw={"asset_id": "1"}),
+        SimpleNamespace(),
+    )
+    assert result.status == "success"
+    assert result.raw["targets"] == ["app"]
+    assert result.raw["content"] == "老师→teacher-device"
 
 
 @pytest.mark.asyncio

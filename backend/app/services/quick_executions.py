@@ -389,11 +389,12 @@ async def _run_executor_submit(
                     for item in submitted_items
                 ],
             }
-            function_map_context = (
-                await compile_quick_context(session, session_id, spec.target)
-            ).context
-            if function_map_context:
-                request_payload["functionMapContext"] = function_map_context
+            top_context = await compile_quick_context(session, session_id, spec.target)
+            if top_context.context:
+                request_payload["functionMapContext"] = top_context.context
+            # Hybrid 主脑需要结构化目录做选机/端过滤；其他执行器只消费拼接上下文。
+            if spec.key == "ai_hybrid" and top_context.maps:
+                request_payload["functionMaps"] = top_context.maps
 
             stage = "submit"
             try:

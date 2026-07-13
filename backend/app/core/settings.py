@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     # AI Hybrid V1 编排防失控：到达上限后不再启动新的子工具，保留已完成证据并返回人工判断。
     hybrid_max_steps: int = 50
     hybrid_max_wall_seconds: int = 1800
+    # AI Hybrid 设备硬锁：主脑显式指定某台设备后，若设备在线但被占用，只在这台上限时等待
+    # （绝不改派其他设备）。等待还受 hybrid_max_wall_seconds 约束。
+    hybrid_device_wait_interval_seconds: int = 180
+    hybrid_device_wait_max_attempts: int = 3
     # Markdown 导入层级配置。真实文件可不提交；缺省时读取内置 legacy 8 级配置。
     markdown_import_config_path: str = "config/markdown_import.json"
 

@@ -57,6 +57,7 @@ case-flow `GET /api/v1/aiphone/devices` 同时调 AI Phone 两个接口求交：
 - **runContent**：四段中文模板（测试标题 / 前置条件 / 操作步骤 / 预期结果）。
 - **platforms**：`android` / `ios` / `harmony`；当前 case-flow 一条 case 走一个平台（默认从设备池 key 推导，缺省 `android`）。多平台暂不做。
 - **deviceAliasPools**：`{平台:[别名]}`。缺省/`[]`=全池任挑；`["A1"]`=锁单台；`["A1","B1"]`=子集池。case-flow 整批共享一个池，由 AI Phone 调度器决定哪台空闲跑哪条。
+- **Hybrid 设备硬锁**：当 AI Hybrid 从显式挂载的 Function Map 识别到「账号/角色 → 设备 alias」绑定时，会提交单 alias 池。它只校验并等待该设备；查无、离线、平台冲突、别名多义或等待超时都返回 `needs_human`，不改派其他设备。
 - **cacheMode**：`off/v1/v2/v3`（轨迹缓存）。批量队列可选，默认 off；需 AI Phone 服务端开缓存能力否则回落 off。
 - **retryMax**：失败重试上限，默认 0。
 - **顺序**：items 数组顺序 = 前端队列顺序；实际执行/并发由 AI Phone 调度。

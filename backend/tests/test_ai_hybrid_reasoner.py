@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.ai_hybrid import reasoner
-from app.services.ai_hybrid.schemas import HybridInput
+from app.services.ai_hybrid.schemas import HybridInput, HybridToolResult
 
 
 @pytest.mark.asyncio
@@ -53,7 +53,44 @@ async def test_react_step_parses_json_decision(monkeypatch: pytest.MonkeyPatch) 
     tool_input_by_tool = user_payload["decision_schema"]["tool_input_by_tool"]
     assert "cli" not in tool_input_by_tool
     assert "report_url" in tool_input_by_tool["report_reader"]["properties"]
+    assert "function_map" in tool_input_by_tool
+    assert "device_alias" in tool_input_by_tool["ai_phone"]["properties"]
+    assert "device_alias" not in tool_input_by_tool["ai_web"]["properties"]
     assert user_payload["history"] == []
+
+
+@pytest.mark.asyncio
+async def test_react_step_receives_map_catalog_and_snapshot_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _Completions:
+        def create(self, **kwargs: object) -> object:
+            captured.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"thought":"ok","action":"finish","verdict":"needs_human","final":{}}'))]
+            )
+
+    monkeypatch.setattr(
+        reasoner,
+        "llm_client",
+        lambda _settings: (SimpleNamespace(chat=SimpleNamespace(completions=_Completions())), SimpleNamespace(llm_model="fake")),
+    )
+    await reasoner.react_step(
+        inp=HybridInput(function_maps=[{"asset_id": 7, "title": "账号设备", "targets": ["app"], "content": "body"}]),
+        history=[],
+        settings=SimpleNamespace(),
+        aiphone_devices=[],
+        aiphone_devices_error="device_snapshot_error: unavailable",
+    )
+    payload = json.loads(captured[0]["messages"][1]["content"])
+    assert payload["function_map_catalog"] == [{"asset_id": 7, "title": "账号设备", "description": "", "targets": ["app"]}]
+    assert payload["aiphone_devices_error"] == "device_snapshot_error: unavailable"
+
+
+def test_function_map_observation_keeps_full_binding_evidence() -> None:
+    body = "绑定=" + "设备" * 40000
+    observed = reasoner.observe(HybridToolResult(tool="function_map", status="success", raw={"content": body}))
+    assert observed["raw"]["content"] == body
 
 
 @pytest.mark.asyncio

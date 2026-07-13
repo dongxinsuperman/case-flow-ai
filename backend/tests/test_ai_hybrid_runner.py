@@ -10,6 +10,14 @@ from app.services.ai_hybrid.schemas import HybridDecision, HybridInput, HybridTo
 _SETTINGS = SimpleNamespace(hybrid_max_steps=50, hybrid_max_wall_seconds=1800)
 
 
+@pytest.fixture(autouse=True)
+def _stub_device_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def snapshot() -> tuple[list[dict[str, str]], str | None]:
+        return [], None
+
+    monkeypatch.setattr(runner, "_load_aiphone_device_snapshot", snapshot)
+
+
 @pytest.mark.asyncio
 async def test_react_loop_fails_when_llm_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     async def unavailable(**_kwargs: object) -> None:

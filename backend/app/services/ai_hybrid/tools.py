@@ -11,6 +11,7 @@ import httpx
 from app.schemas.ai_api import AIAPIDirectRunIn
 from app.services.ai_api.direct import run_direct_aiapi
 from app.services.ai_hybrid import child_wait
+from app.services.ai_hybrid import function_map_ctx
 from app.services.ai_hybrid import report_observer
 from app.services.ai_hybrid.schemas import HybridToolInput, HybridToolResult
 from app.services.executor_platforms import executor_callback_base_url, normalize_executor_platform
@@ -132,6 +133,47 @@ class ReportReaderTool:
         )
 
 
+class FunctionMapTool:
+    """供 Hybrid 主脑渐进式读取挂载 Map；只用于设备绑定，不替子执行器解释业务操作。"""
+
+    name = "function_map"
+
+    async def run(self, inp: HybridToolInput, settings: Any) -> HybridToolResult:
+        raw = inp.raw or {}
+        wanted = raw.get("asset_id") or raw.get("id") or raw.get("title")
+        maps = inp.function_maps
+        context = inp.function_map_context or ""
+        if not str(wanted or "").strip():
+            return HybridToolResult(
+                tool=self.name,
+                status="success",
+                reason="catalog",
+                raw={"catalog": function_map_ctx.build_catalog(maps, context)},
+            )
+        block = function_map_ctx.read_block(maps, context, str(wanted))
+        if block is None:
+            return HybridToolResult(
+                tool=self.name,
+                status="needs_human",
+                reason="function_map_not_found",
+                raw={
+                    "requested": str(wanted),
+                    "catalog": function_map_ctx.build_catalog(maps, context),
+                },
+            )
+        return HybridToolResult(
+            tool=self.name,
+            status="success",
+            reason="read_ok",
+            raw={
+                "asset_id": block.get("asset_id"),
+                "title": block.get("title"),
+                "targets": block.get("targets"),
+                "content": block.get("content"),
+            },
+        )
+
+
 @dataclass(frozen=True)
 class PlatformDecision:
     platform: str
@@ -146,6 +188,8 @@ class ExternalExecutorTool:
     default_platform = ""
     resource_kind = "资源"
     entry_hint = ""
+    # 仅 AI Phone 支持显式锁定一台设备；Web 等执行器保留原有按端资源池逻辑。
+    supports_device_lock = False
     platform_labels: dict[str, str] = {}
     platform_aliases: dict[str, tuple[str, ...]] = {}
 
@@ -190,7 +234,13 @@ class ExternalExecutorTool:
             return HybridToolResult(tool=self.name, status="failed", reason=f"callback_base_error: {exc}")
 
         platform_decision = self._platform_decision(inp)
-        resource_decision = await self._resource_decision(platform_decision)
+        requested_alias = self._requested_device_alias(inp) if self.supports_device_lock else ""
+        if requested_alias:
+            resource_decision = await self._locked_resource_decision(
+                requested_alias, platform_decision, settings
+            )
+        else:
+            resource_decision = await self._resource_decision(platform_decision)
         if resource_decision.get("blocked"):
             return HybridToolResult(
                 tool=self.name,
@@ -206,7 +256,7 @@ class ExternalExecutorTool:
         token = uuid.uuid4().hex
         event = child_wait.register(token, base_url)
         callback_url = f"{callback_base}/api/v1/aihybrid/child-callback/{token}"
-        platform = platform_decision.platform
+        platform = resource_decision.get("platform") or platform_decision.platform
         device_alias_pools = resource_decision.get("device_alias_pools")
         item = {
             "caseId": f"aihybrid-{token[:8]}",
@@ -441,6 +491,124 @@ class ExternalExecutorTool:
             "devices": [_summarize_device(device) for device in selected],
         }
 
+    def _requested_device_alias(self, inp: HybridToolInput) -> str:
+        raw = inp.raw or {}
+        return str(raw.get("device_alias") or raw.get("deviceAlias") or "").strip()
+
+    async def _locked_resource_decision(
+        self,
+        device_alias: str,
+        platform_decision: PlatformDecision,
+        settings: Any,
+    ) -> dict[str, Any]:
+        """硬锁目标设备：不进行模糊匹配、设备替换或隐式回退。"""
+        interval = max(1, int(getattr(settings, "hybrid_device_wait_interval_seconds", 180) or 180))
+        max_attempts = max(1, int(getattr(settings, "hybrid_device_wait_max_attempts", 3) or 3))
+        wall = int(getattr(settings, "hybrid_max_wall_seconds", 1800) or 0)
+        if wall > 0 and interval * (max_attempts - 1) > wall:
+            max_attempts = max(1, wall // interval + 1)
+        last_device: dict[str, Any] | None = None
+        for attempt in range(max_attempts):
+            try:
+                result = await self._list_devices()
+            except Exception as exc:
+                return self._lock_blocked(
+                    "resource_unavailable",
+                    f"当前无法获取{self.resource_kind}资源：{exc}",
+                    device_alias,
+                    platform_decision,
+                )
+            devices = list(getattr(result, "devices", []) or [])
+            if getattr(result, "source", "") == "unavailable" and not devices:
+                return self._lock_blocked(
+                    "resource_unavailable",
+                    f"当前无法获取{self.resource_kind}资源，未提交任务。",
+                    device_alias,
+                    platform_decision,
+                )
+            matched = [device for device in devices if _device_identity_matches(device, device_alias)]
+            if not matched:
+                return self._lock_blocked(
+                    "device_not_available",
+                    f"指定{self.resource_kind}「{device_alias}」当前不在线或不存在，未提交任务（不改派其他设备）。",
+                    device_alias,
+                    platform_decision,
+                    devices=[_summarize_device(device) for device in devices],
+                )
+            if len(matched) > 1:
+                return self._lock_blocked(
+                    "device_alias_ambiguous",
+                    f"指定{self.resource_kind}「{device_alias}」命中多台，无法唯一锁定，未提交任务。",
+                    device_alias,
+                    platform_decision,
+                    devices=[_summarize_device(device) for device in matched],
+                )
+            device = matched[0]
+            last_device = device
+            platform = _device_platform(device)
+            if not platform:
+                return self._lock_blocked(
+                    "device_platform_unknown",
+                    f"设备「{device_alias}」缺少平台信息，无法确认其平台，未提交任务。",
+                    device_alias,
+                    platform_decision,
+                    devices=[_summarize_device(device)],
+                )
+            if platform_decision.source == "explicit" and platform != platform_decision.platform:
+                return self._lock_blocked(
+                    "device_platform_conflict",
+                    (
+                        f"用例语义指定平台 {self._platform_label(platform_decision.platform)}，"
+                        f"但设备「{device_alias}」实际为 {self._platform_label(platform)}，证据冲突，未提交任务。"
+                    ),
+                    device_alias,
+                    platform_decision,
+                    devices=[_summarize_device(device)],
+                )
+            alias = _device_alias(device) or device_alias
+            if not _is_busy_device(device):
+                return {
+                    "blocked": False,
+                    "reason": "device_locked",
+                    "message": f"已锁定指定{self.resource_kind}「{alias}」。",
+                    "platform": platform,
+                    "platform_label": self._platform_label(platform),
+                    "source": getattr(result, "source", ""),
+                    "state": "locked",
+                    "device_alias": alias,
+                    "device_alias_pools": {platform: [alias]},
+                    "devices": [_summarize_device(device)],
+                    "wait_attempts": attempt,
+                }
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(interval)
+        return self._lock_blocked(
+            "device_busy_timeout",
+            f"指定{self.resource_kind}「{device_alias}」持续被占用，等待后仍不空闲，未提交任务（不改派其他设备）。",
+            device_alias,
+            platform_decision,
+            devices=[_summarize_device(last_device)] if last_device else [],
+        )
+
+    def _lock_blocked(
+        self,
+        reason: str,
+        message: str,
+        device_alias: str,
+        platform_decision: PlatformDecision,
+        devices: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "blocked": True,
+            "reason": reason,
+            "message": message,
+            "platform": platform_decision.platform,
+            "platform_label": self._platform_label(platform_decision.platform),
+            "source": "device_lock",
+            "device_alias": device_alias,
+            "devices": devices or [],
+        }
+
     async def _list_devices(self) -> Any:
         raise NotImplementedError
 
@@ -451,6 +619,7 @@ class AIPhoneTool(ExternalExecutorTool):
     label = "AI Phone"
     default_platform = "android"
     resource_kind = "手机"
+    supports_device_lock = True
     entry_hint = "第一句须为固定冷启动话术「关闭 App「【目标App名】」（杀进程）后重新打开 App「【目标App名】」」"
     platform_labels = {"android": "Android", "ios": "iOS", "harmony": "Harmony"}
     platform_aliases = {
@@ -497,6 +666,7 @@ def tool_registry() -> dict[str, HybridTool]:
         "ai_phone": AIPhoneTool(),
         "ai_web": AIWebTool(),
         "report_reader": ReportReaderTool(),
+        "function_map": FunctionMapTool(),
     }
 
 
@@ -556,6 +726,17 @@ def _title_from_text(text: str, fallback: str) -> str:
 
 def _device_alias(device: dict[str, Any]) -> str:
     return str(device.get("alias") or device.get("serial") or "").strip()
+
+
+def _device_identity_matches(device: dict[str, Any], wanted: str) -> bool:
+    """仅精确匹配 alias 或 serial；不按相似名称猜测。"""
+    target = str(wanted or "").strip().lower()
+    if not target:
+        return False
+    return target in {
+        str(device.get("alias") or "").strip().lower(),
+        str(device.get("serial") or "").strip().lower(),
+    }
 
 
 def _device_platform(device: dict[str, Any]) -> str:

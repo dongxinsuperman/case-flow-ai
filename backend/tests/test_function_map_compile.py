@@ -102,6 +102,29 @@ async def test_compile_hybrid_includes_all_targets_in_id_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_compile_hybrid_exposes_the_same_maps_structurally() -> None:
+    asset = SimpleNamespace(
+        id=1,
+        title="账号设备绑定",
+        targets=["app"],
+        content="老师→teacher-device",
+        description="老师账号固定设备",
+    )
+    session = _SeqSession([_AllResult([(1, 10)]), _ScalarsResult([asset]), _ScalarsResult([])])
+    out = await service.compile_top_level_context(session, [1], "mixed")  # type: ignore[arg-type]
+    assert out.maps == [
+        {
+            "asset_id": 1,
+            "title": "账号设备绑定",
+            "description": "老师账号固定设备",
+            "targets": ["app"],
+            "source": _GROUP,
+            "content": "老师→teacher-device",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_compile_ungrouped_uses_only_item_mounts() -> None:
     d = _asset(5, "D 标题", ["app"], "D 内容")
     # 未归属：group_id 为 None，不查一级目录挂载，只查二级需求挂载

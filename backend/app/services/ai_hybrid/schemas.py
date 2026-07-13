@@ -17,6 +17,8 @@ class HybridInput(BaseModel):
     steps_text: str = ""
     expected_result: str = ""
     function_map_context: str = ""
+    # 结构化 Function Map 目录（含 targets/description/content），供主脑选机/渐进式发现。
+    function_maps: list[dict[str, Any]] = Field(default_factory=list)
     source_ref: str = ""
 
 
@@ -24,6 +26,7 @@ class HybridToolInput(BaseModel):
     tool: str
     input: str
     function_map_context: str = ""
+    function_maps: list[dict[str, Any]] = Field(default_factory=list)
     attempt: int = 1
     raw: dict[str, Any] = Field(default_factory=dict)
 

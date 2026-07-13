@@ -103,7 +103,8 @@ async def _run_submission(submission_id: str, payload: HybridSubmitIn) -> None:
                 payload.function_map_context,
                 item.function_map_context,
             )
-            hybrid_input = _hybrid_input_from_item(item, function_map_context)
+            function_maps = _effective_function_maps(payload.function_maps, item.function_maps)
+            hybrid_input = _hybrid_input_from_item(item, function_map_context, function_maps)
             result = await run_hybrid(
                 hybrid_input,
                 settings,
@@ -213,7 +214,9 @@ def _consume_task_exception(task: asyncio.Task[Any]) -> None:
         return
 
 
-def _hybrid_input_from_item(item: Any, function_map_context: str) -> HybridInput:
+def _hybrid_input_from_item(
+    item: Any, function_map_context: str, function_maps: list[dict[str, Any]]
+) -> HybridInput:
     parsed = _parse_run_content(item.run_content)
     title = parsed.get("title") or item.case_name or ""
     steps = parsed.get("steps_text") or item.run_content or ""
@@ -224,6 +227,7 @@ def _hybrid_input_from_item(item: Any, function_map_context: str) -> HybridInput
         steps_text=steps,
         expected_result=parsed.get("expected_result") or "",
         function_map_context=function_map_context,
+        function_maps=function_maps,
         source_ref=item.case_id,
     )
 
@@ -235,6 +239,26 @@ def _effective_function_map_context(batch_context: str, item_context: str) -> st
         if str(part or "").strip()
     ]
     return "\n\n".join(parts)
+
+
+def _effective_function_maps(
+    batch_maps: list[dict[str, Any]] | None,
+    item_maps: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """合并提交级与 item 级的结构化 Map，按 asset_id 去重，提交级优先。"""
+    combined: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    for source in (batch_maps or [], item_maps or []):
+        for entry in source:
+            if not isinstance(entry, dict):
+                continue
+            key = entry.get("asset_id")
+            if key is not None and key in seen:
+                continue
+            if key is not None:
+                seen.add(key)
+            combined.append(entry)
+    return combined
 
 
 def _parse_run_content(text: str) -> dict[str, str]:

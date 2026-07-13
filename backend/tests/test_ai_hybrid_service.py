@@ -19,6 +19,10 @@ async def test_aihybrid_service_posts_item_and_submission_callbacks(
 
     async def fake_run_hybrid(inp: object, settings: object) -> HybridRunResult:
         assert inp.function_map_context == "functionMapContext\n\nitemFunctionMapContext"
+        assert inp.function_maps == [
+            {"asset_id": 1, "title": "提交级"},
+            {"asset_id": 2, "title": "单条级"},
+        ]
         return HybridRunResult(
             status="success",
             status_reason="all_required_steps_passed",
@@ -44,12 +48,17 @@ async def test_aihybrid_service_posts_item_and_submission_callbacks(
                 "submissionName": "Hybrid test",
                 "callbackUrl": "http://case-flow.local/api/v1/aihybrid/callback/token",
                 "functionMapContext": "functionMapContext",
+                "functionMaps": [{"asset_id": 1, "title": "提交级"}],
                 "items": [
                     {
                         "caseId": "cf-1",
                         "caseName": "混合 case",
                         "runContent": "先调用 api，再打开 app 检查结果",
                         "functionMapContext": "itemFunctionMapContext",
+                        "functionMaps": [
+                            {"asset_id": 1, "title": "重复提交级"},
+                            {"asset_id": 2, "title": "单条级"},
+                        ],
                     }
                 ],
             }

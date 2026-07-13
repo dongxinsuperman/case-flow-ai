@@ -136,7 +136,7 @@
 - `POST /api/v1/executions/aihybrid/submit` — 提交 mixed case 到内置 AI Hybrid。体复用 `{ caseIds[], submissionName }`；不需要设备池，`cacheMode/retryMax` 会被忽略。
 - `POST /api/v1/aihybrid/callback/{callback_token}` — AI Hybrid 父回调入口，按标准执行批次写回 `case_work_items`。
 - `POST /api/v1/aihybrid/child-callback/{callback_token}` — AI Hybrid 子工具回调入口，只解除编排器内部等待，不写业务 case 状态。
-- `POST /aihybrid/api/submissions` — 内置 AI Hybrid 服务入口。它与外部执行器协议同构，接收 `{ submissionName, callbackUrl, functionMapContext?, items[] }`，`items[]` 内可带当前执行单元自己的 `functionMapContext`。Hybrid 对每个 item 使用 `payload.functionMapContext + item.functionMapContext` 合成单份上下文，后台编排子工具时原样透传给 AI Phone/Web/API。
+- `POST /aihybrid/api/submissions` — 内置 AI Hybrid 服务入口。它与外部执行器协议同构，接收 `{ submissionName, callbackUrl, functionMapContext?, functionMaps?, items[] }`；`items[]` 内也可带自己的 `functionMapContext`、`functionMaps`。Hybrid 合并顶层与 item 级上下文；结构化 Map 按 `asset_id` 去重、顶层优先。标准/快速执行由后端从显式挂载编译并注入，外部调用可传同形数据。结构化 Map 只用于按需发现设备绑定，正文仍原样透传给 AI Phone/Web/API。
 - AI Hybrid 写 `executor="ai_hybrid"`、`platform="mixed"`；`needs_human` 映射为失败原因而不是新的执行状态。失败有报告时**会触发自动诊断修复**（总报告内嵌结构化证据 + 各失败端错误截图，`read_report(executor="ai_hybrid")` 无损解析，诊断/提 bug 逐端带图）。
 
 ### AI API 对外 Direct Run（详见 `AI-API对外接口.md`）

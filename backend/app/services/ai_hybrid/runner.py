@@ -42,6 +42,8 @@ async def run_hybrid(inp: HybridInput, settings: Settings | None = None) -> Hybr
     history: list[dict[str, Any]] = []
     child_results: list[HybridToolResult] = []
     trace: list[dict[str, Any]] = []
+    # 仅作主脑“选机”接地；真正派发时仍由工具实时复查，失败不静默成空设备列表。
+    aiphone_devices, aiphone_devices_error = await _load_aiphone_device_snapshot()
 
     # 报告索引/截图缓存只在这一次 run 内有效，run 结束即释放：不落库、也不做进程级悬挂缓存。
     with report_observer.run_cache_scope():
@@ -54,7 +56,13 @@ async def run_hybrid(inp: HybridInput, settings: Settings | None = None) -> Hybr
                     started_at,
                 )
 
-            decision = await react_step(inp=inp, history=history, settings=settings)
+            decision = await react_step(
+                inp=inp,
+                history=history,
+                settings=settings,
+                aiphone_devices=aiphone_devices,
+                aiphone_devices_error=aiphone_devices_error,
+            )
             if decision is None:
                 # LLM 不可用：直接判失败报错，不做任何规则兜底。
                 return _with_run_meta(
@@ -131,6 +139,7 @@ async def _run_tool(
                 tool=tool_name,
                 input=text,
                 function_map_context=inp.function_map_context,
+                function_maps=inp.function_maps,
                 raw={**tool_input, "thought": decision.thought, "sourceRef": inp.source_ref},
             ),
             settings,
@@ -142,6 +151,32 @@ async def _run_tool(
             reason=f"tool_error: {exc}",
             raw={"error": str(exc), "tool_input": tool_input},
         )
+
+
+async def _load_aiphone_device_snapshot() -> tuple[list[dict[str, Any]], str | None]:
+    """提供精简的设备快照给主脑，拉取失败以 error 显式传递而非伪装成空列表。"""
+    try:
+        from app.services.executions import list_aiphone_devices
+
+        result = await list_aiphone_devices()
+    except Exception as exc:
+        return [], f"device_snapshot_error: {exc}"
+    error: str | None = None
+    if getattr(result, "source", "") == "unavailable":
+        error = str(getattr(result, "error", "") or "device_snapshot_unavailable")
+    snapshot: list[dict[str, Any]] = []
+    for device in getattr(result, "devices", []) or []:
+        alias = str(device.get("alias") or device.get("serial") or "").strip()
+        if alias:
+            snapshot.append(
+                {
+                    "alias": alias,
+                    "platform": str(device.get("platform") or "").strip().lower(),
+                    "occupancy": str(device.get("occupancy") or "idle"),
+                    "model": str(device.get("model") or ""),
+                }
+            )
+    return snapshot, error
 
 
 def _finish_result(
