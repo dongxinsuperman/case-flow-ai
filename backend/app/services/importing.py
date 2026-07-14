@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,12 +13,24 @@ from app.core.database import AsyncSessionLocal
 from app.models.case_assets import CaseAsset, CaseBody, CaseRawNode, CaseStep, CaseWorkItem, ImportBatch
 from app.models.requirements import RequirementAssignee, RequirementItem
 from app.schemas.importing import ImportMarkdownIn, ImportMarkdownOut, ImportReviewCommitIn
-from app.services import case_matching, case_tagging, import_jobs
+from app.services import case_matching, case_tagging, import_jobs, import_reviews
 from app.services.execution_reset import (
     clear_standard_case_execution_artifacts,
     reset_standard_work_item_execution,
 )
 from app.services.markdown_parser import ParsedCase, ParsedMarkdown, parse_markdown
+
+logger = logging.getLogger(__name__)
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+def _batch_signature(existing_cases: list[dict[str, Any]]) -> str:
+    """返回当前批次全部 case 的内容指纹，用于阻断并发修改覆盖。"""
+    parts = sorted(f"{case['id']}:{case_matching.case_digest(case)}" for case in existing_cases)
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 async def import_markdown(session: AsyncSession, payload: ImportMarkdownIn) -> ImportMarkdownOut:
@@ -45,6 +59,14 @@ async def import_markdown(session: AsyncSession, payload: ImportMarkdownIn) -> I
                 case_count=len(parsed.cases),
                 warnings=parsed.warnings,
             )
+        # 展示阶段只计算一次；确认阶段将按 review_id 复用这份快照，避免模型/候选二次漂移。
+        review["review_id"] = import_reviews.store(
+            requirement_item_id=payload.requirement_item_id,
+            source_name=parsed.source_name,
+            content_hash=_content_hash(payload.content),
+            batch_signature=_batch_signature(existing_cases),
+            review=review,
+        )
         return ImportMarkdownOut(
             mode="collision_review",
             message="检测到同文件二次导入，请处理全部新增、替代、删除差异后再落库。",
@@ -108,7 +130,7 @@ async def start_commit_import_review(
     session: AsyncSession,
     payload: ImportReviewCommitIn,
 ) -> dict[str, Any]:
-    """路由入口：落库前会重算碰撞（同样要调模型），因此也走后台任务 + 轮询。"""
+    """路由入口：落库复用碰撞快照；变更 case 的执行端打标仍可能调模型，故仍走后台任务。"""
     parsed = parse_markdown(payload.content, _source_name(payload.filename))
     existing_batch = await get_import_batch_by_source(
         session,
@@ -147,11 +169,39 @@ async def commit_import_review(session: AsyncSession, payload: ImportReviewCommi
     if existing_batch is None:
         raise ValueError("同文件测试集不存在，无法确认碰撞结果")
 
+    # 只使用展示阶段保存的快照：不重算碰撞，不会产生新的模型判断。
+    snapshot = import_reviews.get(payload.review_id) if payload.review_id else None
+    if snapshot is None:
+        logger.warning("commit_import_review: snapshot missing or expired review_id=%s", payload.review_id)
+        raise ValueError("碰撞结果已过期或不存在，请重新导入碰撞后再确认。")
+    if (
+        snapshot["requirement_item_id"] != payload.requirement_item_id
+        or snapshot["source_name"] != parsed.source_name
+    ):
+        raise ValueError("碰撞结果与当前测试集不匹配，请重新导入碰撞。")
+    if snapshot["content_hash"] != _content_hash(payload.content):
+        raise ValueError("导入文件内容已变化，请重新导入碰撞后再确认。")
+
     existing_cases = await list_cases_for_batch(session, existing_batch.id)
-    review = await asyncio.to_thread(case_matching.build_import_review, parsed, existing_cases)
+    if snapshot["batch_signature"] != _batch_signature(existing_cases):
+        logger.warning(
+            "commit_import_review: batch changed during review review_id=%s batch_id=%s",
+            payload.review_id,
+            existing_batch.id,
+        )
+        raise ValueError("该测试集在你处理期间已被修改，请重新导入碰撞后再确认。")
+
+    review = snapshot["review"]
     decisions = [decision.model_dump(exclude_none=True) for decision in payload.decisions]
     final_decisions = validate_import_review_decisions(review, decisions)
     batch = await apply_import_review(session, parsed, payload.requirement_item_id, final_decisions)
+    import_reviews.discard(payload.review_id)
+    logger.info(
+        "commit_import_review: committed review_id=%s batch_id=%s decisions=%s",
+        payload.review_id,
+        batch.id,
+        len(final_decisions),
+    )
     return {
         "mode": "review_committed",
         "message": "打磨碰撞处理已落库。",
@@ -203,6 +253,14 @@ def validate_import_review_decisions(
         for item in decisions_by_key.values()
         if item.get("action") == "replace" and item.get("old_case_id")
     }
+    # 1:1 护栏：已被完全一致的新 case 锁定的旧 case 不能被替代或删除。
+    exact_old_ids = {int(value) for value in review.get("exact_old_ids") or []}
+    conflict_replace = sorted(replacement_old_ids & exact_old_ids)
+    if conflict_replace:
+        raise ValueError(f"不能替代已与其他新 case 完全一致的旧 case：{conflict_replace}")
+    conflict_delete = sorted(set(delete_decisions_by_id) & exact_old_ids)
+    if conflict_delete:
+        raise ValueError(f"不能删除已与其他新 case 完全一致的旧 case：{conflict_delete}")
     allowed_delete_ids = {int(item["old_case_id"]) for item in review["delete_items"]}
     unknown_delete_ids = sorted(set(delete_decisions_by_id) - allowed_delete_ids)
     if unknown_delete_ids:

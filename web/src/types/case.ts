@@ -398,6 +398,7 @@ export interface DeleteReviewItem {
 }
 
 export interface ImportReview {
+  reviewId?: string
   suiteTitle: string
   caseCount: number
   exactCount: number
@@ -405,6 +406,7 @@ export interface ImportReview {
   deleteCount: number
   primaryMatchThreshold: number
   modelTopN: number
+  exactOldIds?: number[]
   reviewItems: ImportReviewItem[]
   deleteItems: DeleteReviewItem[]
 }

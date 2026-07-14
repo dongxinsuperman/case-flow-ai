@@ -19,42 +19,39 @@ def build_import_review(
     parsed: ParsedMarkdown,
     existing_cases: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    existing_by_digest: dict[str, list[dict[str, Any]]] = {}
+    # 第一阶段：先全局锁定所有完全一致的旧 case。必须扫完整份导入文件，
+    # 否则前面一条相似 case 可能先抢走后面一条完全一致 case 的旧记录，导致 1:1 被破坏。
+    remaining_by_digest: dict[str, list[dict[str, Any]]] = {}
     for case in existing_cases:
-        existing_by_digest.setdefault(case_digest(case), []).append(case)
+        remaining_by_digest.setdefault(case_digest(case), []).append(case)
 
     exact_count = 0
     exact_matched_old_ids: set[int] = set()
-    review_items: list[dict[str, Any]] = []
-
+    pending: list[tuple[ParsedCase, dict[str, Any], str]] = []
     for parsed_case in parsed.cases:
         incoming = parsed_case_to_dict(parsed_case)
         digest = case_digest(incoming)
-        exact_candidates = existing_by_digest.get(digest) or []
-        if exact_candidates:
-            matched_old = exact_candidates.pop(0)
+        bucket = remaining_by_digest.get(digest)
+        if bucket:
+            matched_old = bucket.pop(0)
             exact_matched_old_ids.add(int(matched_old["id"]))
             exact_count += 1
             continue
+        pending.append((parsed_case, incoming, digest))
 
-        review_items.append(
-            {
-                "incoming_key": incoming_case_key(parsed_case, digest),
-                "digest": digest,
-                "incoming": incoming,
-                "candidates": top_candidates(
-                    incoming,
-                    [
-                        case
-                        for case in existing_cases
-                        if int(case["id"]) not in exact_matched_old_ids
-                    ],
-                    MODEL_TOP_N,
-                ),
-                "model_used": False,
-                "model_summary": "",
-            }
-        )
+    # 第二阶段：只有未完全一致的新 case 生成候选。候选池始终排除已锁定的旧 case。
+    candidate_pool = [case for case in existing_cases if int(case["id"]) not in exact_matched_old_ids]
+    review_items: list[dict[str, Any]] = [
+        {
+            "incoming_key": incoming_case_key(parsed_case, digest),
+            "digest": digest,
+            "incoming": incoming,
+            "candidates": top_candidates(incoming, candidate_pool, MODEL_TOP_N),
+            "model_used": False,
+            "model_summary": "",
+        }
+        for parsed_case, incoming, digest in pending
+    ]
 
     enrich_with_model(review_items)
     primary_old_ids = assign_primary_matches(review_items)
@@ -80,6 +77,7 @@ def build_import_review(
         "delete_count": len(delete_items),
         "primary_match_threshold": PRIMARY_MATCH_THRESHOLD,
         "model_top_n": MODEL_TOP_N,
+        "exact_old_ids": sorted(exact_matched_old_ids),
         "review_items": review_items,
         "delete_items": delete_items,
     }

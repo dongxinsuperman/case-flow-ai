@@ -22,6 +22,7 @@ class ImportReviewCommitIn(BaseModel):
     requirement_item_id: int
     filename: str = "uploaded.md"
     content: str
+    review_id: str | None = None
     decisions: list[ImportReviewDecisionIn] = Field(default_factory=list)
 
 

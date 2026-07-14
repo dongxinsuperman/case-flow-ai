@@ -76,7 +76,7 @@
 
 ### Markdown 导入与打磨碰撞
 - `POST /api/v1/imports/markdown` — 上传解析；同一二级需求下仅当来源文件名相同才可能返回 `mode: collision_review`（进碰撞审批），文件名不同则作为独立测试集确认；Markdown 一级标题只作为测试集展示标题。层级由部署级公开配置决定，见 [Markdown 导入与层级配置](Markdown层级配置.md)。导入时核心字段内的非列表续行会合并到上一条字段文本，并折叠为空格。
-- `POST /api/v1/imports/markdown/commit` — 提交碰撞审批决策落库（整体提交）。提交时沿用同一 Markdown 核心字段单行化规则。
+- `POST /api/v1/imports/markdown/commit` — 提交碰撞审批决策落库（整体提交）。请求体除 `requirementItemId`、`filename`、`content`、`decisions` 外必须带展示阶段返回的 `reviewId`。后端复用该快照，不重算碰撞或再次调用碰撞模型；若快照过期、文件/来源不一致，或审批期间当前测试集已变化，明确返回“重新导入碰撞”，不会按旧结果写入。提交时沿用同一 Markdown 核心字段单行化规则。
 
 ### 快速模式（`routes/quick.py`）
 - `POST /api/v1/quick/sessions/import` — 导入 Markdown 创建 quick session。体：`{ filename, content, functionFiles[] }`（`functionFiles` 为 [当前·旧·停用] 字段，快速模式 Function Map 已改走 `function_map_quick_mounts` 挂载，导入不再需要传）。结构错误整体 422，不半导入；核心字段内的非列表续行会合并到上一条字段文本，并折叠为空格。导入时复用标准执行端打标：规则优先；Web 规则包含平台、后台、管理端、控制台、站点/网站、cb、vm、视频后台、课程后台，不包含单独的“课程”；规则未命中时同步模型判断，模型失败或无结果时按人工执行兜底。

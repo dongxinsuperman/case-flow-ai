@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from app.schemas.importing import ImportMarkdownIn
+from app.schemas.importing import ImportMarkdownIn, ImportReviewCommitIn
 from app.models.case_assets import CaseAsset
-from app.services import case_matching, importing
+from app.services import case_matching, import_reviews, importing
 from app.services.markdown_import_config import parse_markdown_import_config
 from app.services.markdown_parser import ParsedMarkdown, parse_markdown
 
@@ -651,3 +652,214 @@ async def test_apply_import_review_keep_old_case_is_noop(monkeypatch: pytest.Mon
     assert ensure_calls == [([], [])]
     assert session.deleted == []
     assert session.committed is True
+
+
+def test_exact_match_is_reserved_before_candidates_can_claim_it() -> None:
+    """后出现的完全一致 case 必须先锁定旧 case，不能被前面的近似 case 抢走。"""
+    original = parse_cases(
+        """
+- 通用工作台回归用例
+  - 内容模块
+    - 列表页
+      - 基础展示
+        - 测试标题：打开列表显示内容
+          - 前置条件：已进入测试环境
+            - 操作步骤：打开列表页
+              - 预期结果：显示内容卡片
+"""
+    )
+    changed = parse_cases(
+        """
+- 通用工作台回归用例
+  - 内容模块
+    - 列表页
+      - 基础展示
+        - 测试标题：打开列表显示内容（改版）
+          - 前置条件：已进入测试环境
+            - 操作步骤：打开列表页
+              - 预期结果：显示内容卡片
+        - 测试标题：打开列表显示内容
+          - 前置条件：已进入测试环境
+            - 操作步骤：打开列表页
+              - 预期结果：显示内容卡片
+"""
+    )
+
+    review = case_matching.build_import_review(changed, existing_rows(original))
+
+    assert review["exact_count"] == 1
+    assert review["exact_old_ids"] == [1]
+    assert review["review_count"] == 1
+    assert review["review_items"][0].get("primary_old_case_id") is None
+    assert review["delete_count"] == 0
+
+
+def test_commit_decision_rejects_replacing_or_deleting_exact_locked_case() -> None:
+    review = {
+        "review_items": [{"incoming_key": "1:abc", "primary_old_case_id": 5}],
+        "delete_items": [{"old_case_id": 5}],
+        "exact_old_ids": [5],
+    }
+
+    with pytest.raises(ValueError, match="完全一致"):
+        importing.validate_import_review_decisions(
+            review,
+            [{"incoming_key": "1:abc", "old_case_id": 5, "action": "replace"}],
+        )
+
+    delete_review = {
+        "review_items": [],
+        "delete_items": [{"old_case_id": 5}],
+        "exact_old_ids": [5],
+    }
+    with pytest.raises(ValueError, match="完全一致"):
+        importing.validate_import_review_decisions(
+            delete_review,
+            [{"old_case_id": 5, "action": "delete"}],
+        )
+
+
+@pytest.mark.asyncio
+async def test_commit_uses_displayed_snapshot_without_recomputing_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """确认入库只使用展示快照：不得重算碰撞，也不会再调碰撞模型。"""
+    content = BASE_TWO_CASES
+    parsed = parse_cases(content)
+    existing = existing_rows(parsed)
+    batch = SimpleNamespace(
+        id=31,
+        suite_title=parsed.suite_title,
+        source_name=parsed.source_name,
+        requirement_item_id=7,
+        imported_at=None,
+        case_count=2,
+        raw_metadata={},
+    )
+    review = {
+        "review_items": [],
+        "delete_items": [{"delete_key": "delete:2", "old_case_id": 2, "old_case": {}, "reason": ""}],
+        "exact_old_ids": [1],
+    }
+    snapshot = {
+        "requirement_item_id": 7,
+        "source_name": parsed.source_name,
+        "content_hash": importing._content_hash(content),
+        "batch_signature": importing._batch_signature(existing),
+        "review": review,
+        "created_at": 0.0,
+    }
+    applied: dict[str, object] = {}
+
+    async def fake_get_batch(_session: object, requirement_item_id: int, source_name: str) -> object:
+        assert (requirement_item_id, source_name) == (7, "cases.md")
+        return batch
+
+    async def fake_list_cases(_session: object, _batch_id: int) -> list[dict]:
+        return existing
+
+    async def fake_apply(_session: object, _parsed: object, _req: int, decisions: list) -> object:
+        applied["decisions"] = decisions
+        return batch
+
+    def fail_recompute(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("确认入库不应重新计算碰撞")
+
+    monkeypatch.setattr(importing, "get_import_batch_by_source", fake_get_batch)
+    monkeypatch.setattr(importing, "list_cases_for_batch", fake_list_cases)
+    monkeypatch.setattr(importing, "apply_import_review", fake_apply)
+    monkeypatch.setattr(import_reviews, "get", lambda _review_id: snapshot)
+    monkeypatch.setattr(import_reviews, "discard", lambda _review_id: None)
+    monkeypatch.setattr(case_matching, "build_import_review", fail_recompute)
+
+    result = await importing.commit_import_review(
+        SimpleNamespace(),
+        ImportReviewCommitIn(
+            requirement_item_id=7,
+            filename="cases.md",
+            content=content,
+            review_id="review-1",
+            decisions=[{"old_case_id": 2, "action": "delete"}],
+        ),
+    )
+
+    assert result["mode"] == "review_committed"
+    assert applied["decisions"] == [{"old_case_id": 2, "action": "delete"}]
+
+
+@pytest.mark.asyncio
+async def test_commit_rejects_missing_snapshot_instead_of_falling_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = SimpleNamespace(
+        id=31,
+        suite_title="通用测试集",
+        source_name="cases.md",
+        requirement_item_id=7,
+        imported_at=None,
+        case_count=2,
+        raw_metadata={},
+    )
+
+    async def fake_get_batch(_session: object, _requirement_item_id: int, _source_name: str) -> object:
+        return batch
+
+    monkeypatch.setattr(importing, "get_import_batch_by_source", fake_get_batch)
+    monkeypatch.setattr(import_reviews, "get", lambda _review_id: None)
+
+    with pytest.raises(ValueError, match="重新导入碰撞"):
+        await importing.commit_import_review(
+            SimpleNamespace(),
+            ImportReviewCommitIn(
+                requirement_item_id=7,
+                filename="cases.md",
+                content=BASE_TWO_CASES,
+                review_id="missing",
+                decisions=[],
+            ),
+        )
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_generic_fixture_keeps_old_cases_one_to_one() -> None:
+    """通用语料回归：exact、替代和删除三组旧 case 必须互斥且覆盖完整旧批次。"""
+    original = parse_markdown((FIXTURES / "collision_original.md").read_text("utf-8"), "cases.md")
+    updated = parse_markdown((FIXTURES / "collision_updated.md").read_text("utf-8"), "cases.md")
+    existing = existing_rows(original)
+
+    review = case_matching.build_import_review(updated, existing)
+
+    assert len(original.cases) == 5
+    assert len(updated.cases) == 4
+    assert review["exact_count"] == 2
+    assert review["exact_count"] + review["review_count"] == len(updated.cases)
+
+    all_old_ids = {int(row["id"]) for row in existing}
+    exact_ids = {int(value) for value in review["exact_old_ids"]}
+    primary_ids = {
+        int(item["primary_old_case_id"])
+        for item in review["review_items"]
+        if item.get("primary_old_case_id")
+    }
+    delete_ids = {int(item["old_case_id"]) for item in review["delete_items"]}
+
+    assert exact_ids.isdisjoint(primary_ids)
+    assert exact_ids.isdisjoint(delete_ids)
+    assert primary_ids.isdisjoint(delete_ids)
+    assert exact_ids | primary_ids | delete_ids == all_old_ids
+    assert primary_ids
+    assert delete_ids
+
+    decisions: list[dict] = []
+    for item in review["review_items"]:
+        primary = item.get("primary_old_case_id")
+        decisions.append(
+            {"incoming_key": item["incoming_key"], "old_case_id": primary, "action": "replace"}
+            if primary
+            else {"incoming_key": item["incoming_key"], "action": "add"}
+        )
+    decisions.extend({"old_case_id": item["old_case_id"], "action": "delete"} for item in review["delete_items"])
+
+    assert len(importing.validate_import_review_decisions(review, decisions)) == len(decisions)

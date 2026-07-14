@@ -790,8 +790,8 @@ async function commitReview() {
   }
   importing.value = true
   startImportProgress('正在写入导入结果')
-  importProgress.stages = ['重算碰撞校验', '模型碰撞判断', '写入用例']
-  importProgress.hint = '正在按你的处理结果重算碰撞并落库，请耐心等待；失败会明确报错。'
+  importProgress.stages = ['校验处理结果', '写入用例（变更打标可能调模型）']
+  importProgress.hint = '正在按你审批的碰撞结果落库，请耐心等待；失败会明确报错。'
   error.value = ''
   try {
     const decisions = [
@@ -806,18 +806,25 @@ async function commitReview() {
           requirementItemId: selectedRequirementId.value,
           filename: selectedFileName.value || 'uploaded.md',
           content: selectedFileContent.value,
+          reviewId: review.value.reviewId,
           decisions,
         } as unknown as BodyInit,
       },
     )
-    // 落库会重算碰撞（同样调模型），一样走后台任务 + 轮询，避免网关超时。
+    // 落库复用展示时的碰撞快照；变更 case 打标仍可能调模型，因此仍走后台任务。
     const result = await pollImportJob<{ message: string }>(started.taskId)
     notice.value = result.message
     review.value = null
     clearDecisionState()
     await loadCases()
   } catch (err) {
-    error.value = normalizeError(err)
+    const message = normalizeError(err)
+    error.value = message
+    // 快照过期、文件变化或批次被并发修改时，旧碰撞结果已失效；不能在原结果上重试空转。
+    if (message.includes('重新导入碰撞') || message.includes('重新碰撞')) {
+      review.value = null
+      clearDecisionState()
+    }
   } finally {
     importing.value = false
     stopImportProgress()
