@@ -26,6 +26,7 @@ from app.models.requirements import (
     User,
 )
 from app.services.sources import feishu_project
+from app.services import executor_cancellation
 from app.services.execution_reset import (
     clear_standard_case_execution_artifacts,
     reset_standard_work_item_execution,
@@ -1112,6 +1113,15 @@ async def update_case_work_item(
     item = await session.get(CaseWorkItem, payload.case_id)
     if item is None:
         return None
+    cancellation_targets = []
+    if payload.execution_status == "not_run" and item.execution_status == "running":
+        # reset 会删 execution item 并清空 submission 关联，必须先只摘取取消目标。
+        cancellation_targets = await executor_cancellation.snapshot_standard_targets(
+            session,
+            case_id=item.case_id,
+            active_batch_id=item.active_execution_batch_id,
+            external_submission_id=item.external_submission_id,
+        )
     should_clear_artifacts = payload.execution_status is not None or payload.execution_target is not None
     if payload.execution_status is not None:
         reset_standard_work_item_execution(item, status=payload.execution_status)
@@ -1126,6 +1136,8 @@ async def update_case_work_item(
     if should_clear_artifacts:
         await clear_standard_case_execution_artifacts(session, [payload.case_id])
     await session.commit()
+    if cancellation_targets:
+        executor_cancellation.schedule_cancellation("standard", cancellation_targets)
     return CaseWorkItemUpdateOut(
         case_id=item.case_id,
         execution_status=item.execution_status,

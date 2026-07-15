@@ -33,7 +33,7 @@ from app.schemas.quick import (
     QuickWorkItemUpdateIn,
     QuickWorkItemUpdateOut,
 )
-from app.services import case_tagging
+from app.services import case_tagging, executor_cancellation
 from app.services.execution_reset import (
     clear_quick_case_execution_artifacts,
     reset_quick_work_item_execution,
@@ -256,6 +256,15 @@ async def update_case_work_item(
     work_item = await session.get(QuickCaseWorkItem, payload.case_id)
     if work_item is None:
         return None
+    cancellation_targets = []
+    if payload.execution_status == "not_run" and work_item.execution_status == "running":
+        # reset 会删 execution item 并清空 submission 关联，必须先只摘取取消目标。
+        cancellation_targets = await executor_cancellation.snapshot_quick_targets(
+            session,
+            case_id=work_item.case_id,
+            active_batch_id=work_item.active_execution_batch_id,
+            external_submission_id=work_item.external_submission_id,
+        )
     should_clear_artifacts = payload.execution_status is not None or payload.execution_target is not None
     if payload.execution_status is not None:
         reset_quick_work_item_execution(work_item, status=payload.execution_status)
@@ -270,6 +279,8 @@ async def update_case_work_item(
     if should_clear_artifacts:
         await clear_quick_case_execution_artifacts(session, [payload.case_id])
     await session.commit()
+    if cancellation_targets:
+        executor_cancellation.schedule_cancellation("quick", cancellation_targets)
     return QuickWorkItemUpdateOut(
         case_id=work_item.case_id,
         execution_status=work_item.execution_status,

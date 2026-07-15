@@ -149,6 +149,7 @@
 
 - 单条执行与批量执行都走对应执行器 submit 路由；区别只是前端传的 case 数量、是否带 `cacheMode/retryMax`（单条默认 off/0）、以及是否需要设备池。
 - 同一次前端执行队列可以混合 App/Web/API/Hybrid/人工；确认后前端按执行器分组推送：App 子集走 AI Phone，Web 子集走 AI Web，API 子集走 AI API，Hybrid 子集走 AI Hybrid，人工暂本地置为执行中。
+- [当前] 标准与 Quick 的“停止执行”继续复用 case-work-item 更新接口、本地结果仍是 `not_run`。后端会在删除执行 item 前快照取消目标，提交本地重置后异步发送执行器 cancel hook：AI Phone / AI Web 用 submission + external case + platform，AI Hybrid 用 `{ caseIds[] }`，AI API 调内部停止函数；不在响应中返回或保存取消结果，hook 失败不影响本地停止。
 - [当前] 检查点 7：AI Phone/Web/Hybrid 的 submit 已后台化——前台只做入参校验 + 标记执行中 + 建调用日志后秒回（返回体新增 `callId`），编译 Function Map 与提交执行器在进程内后台任务完成。**明显入参错误（case 不存在、端不匹配）仍前台 400**；**编译/提交执行器失败无外部回调，由后端把这些 case 回写 `failed` 并写卡片原因**（不再前台弹窗）。前端一次点击生成 `executionRequestGroupId` 随各路 submit 带上，聚合到 `execution_strategy_call_logs`（迁移 0031）。
 - `functionMapContext` 不在请求体里手填：后端在 submit（后台任务）时按执行容器的显式挂载编译后注入（见集成文档）。
 - 无鉴权（内网通用）。

@@ -58,7 +58,7 @@ AI API 要和 AI Phone / AI Web 在产品语义上统一，但实现上更轻：
 
 ## 内部停止
 
-标准和快速模式的 AI API batch 都有本进程内停止入口 `stop_aiapi_execution(submission_id, case_ids?)`。它取消当前执行 coroutine，并跳过后续 case；停止的单元不生成报告、不回写成功/失败终态、不触发诊断。这个入口**不新增 HTTP 路由**，也不适用于 `POST /api/v1/aiapi/run` 的对外 Direct Run。
+标准和快速模式的 AI API batch 都有本进程内停止入口 `stop_aiapi_execution(submission_id, case_ids?)`。首页 / Quick 的停止操作会在清除本地执行关联前取出该 batch，然后在本地 case 已恢复 `not_run` 后异步调用这个入口。它取消当前执行 coroutine，并跳过后续 case；停止的单元不生成报告、不回写成功/失败终态、不触发诊断。这个入口**不新增 HTTP 路由**，也不适用于 `POST /api/v1/aiapi/run` 的对外 Direct Run。
 
 已经发出的 HTTP 请求没有通用的远端撤销协议：停止只中断 Case Flow 当前等待和后续调用，不推断目标服务是否已经处理请求或是否成功。这是明确暴露的链路边界，不会把未知结果兜底成某个执行状态。
 
