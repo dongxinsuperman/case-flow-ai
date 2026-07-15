@@ -51,7 +51,7 @@ class FunctionMapAssetMetaUpdateIn(BaseModel):
 
 
 class FunctionMapAssetContentOverwriteIn(BaseModel):
-    """导入覆盖：正文不在线编辑，只能用导入文件的正文覆盖。"""
+    """保存正文：直接填写或用导入文件正文覆盖。"""
 
     content: str
     source_filename: str | None = None

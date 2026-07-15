@@ -192,7 +192,7 @@ async def create_asset(
         description=payload.description,
         content=payload.content,
         targets=list(payload.targets),
-        source_type="local_import",
+        source_type="local_import" if payload.source_filename else "manual",
         source_filename=payload.source_filename,
     )
     session.add(asset)
@@ -235,13 +235,13 @@ async def overwrite_content(
     asset_id: int,
     payload: FunctionMapAssetContentOverwriteIn,
 ) -> FunctionMapAssetOut:
-    """导入覆盖：只替换正文，元信息保持不变。"""
+    """保存正文：直接填写或本地导入均只替换正文，元信息保持不变。"""
     asset = await session.get(FunctionMapAsset, asset_id)
     if asset is None:
         raise ValueError(NOT_FOUND)
     asset.content = payload.content
-    if payload.source_filename:
-        asset.source_filename = payload.source_filename
+    asset.source_type = "local_import" if payload.source_filename else "manual"
+    asset.source_filename = payload.source_filename
     asset.updated_at = func.now()
     await session.commit()
     await session.refresh(asset)

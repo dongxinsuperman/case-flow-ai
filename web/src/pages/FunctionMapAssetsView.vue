@@ -154,12 +154,10 @@ function hideDescTip() {
 }
 
 const showForm = ref(false)
-const formKind = ref<'create' | 'editMeta'>('create')
+const formKind = ref<'create' | 'editMeta' | 'editContent'>('create')
 const formAssetId = ref<number | null>(null)
 const formError = ref('')
 const submitting = ref(false)
-const overwriteInput = ref<HTMLInputElement | null>(null)
-const overwriting = ref(false)
 
 const form = reactive({
   title: '',
@@ -580,38 +578,12 @@ function openEditMeta(asset: FunctionMapAsset) {
   showForm.value = true
 }
 
-function triggerOverwrite() {
-  overwriteInput.value?.click()
-}
-
-async function onOverwriteFile(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file || !detail.value) {
-    return
-  }
-  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
-  if (!ACCEPTED_EXT.includes(ext)) {
-    store.error = `只支持 .md / .txt / .json 文件，当前是 .${ext}`
-    input.value = ''
-    return
-  }
-  const current = detail.value
-  overwriting.value = true
-  try {
-    // 导入覆盖只替换正文，标题/适用场景/适用端保持原资产不变。
-    const updated = await store.overwriteContent(current.id, {
-      content: await file.text(),
-      sourceFilename: file.name,
-    })
-    detail.value = updated
-    store.error = ''
-  } catch (err) {
-    store.error = err instanceof Error ? err.message : '导入覆盖失败'
-  } finally {
-    overwriting.value = false
-    input.value = ''
-  }
+function openEditContent(asset: FunctionMapAsset) {
+  resetForm()
+  formKind.value = 'editContent'
+  formAssetId.value = asset.id
+  form.content = asset.content
+  showForm.value = true
 }
 
 function closeForm() {
@@ -657,17 +629,19 @@ function buildInput(): FunctionMapAssetInput {
 }
 
 function validateForm(): string {
-  if (!form.title.trim()) {
-    return '标题不能为空'
+  if (formKind.value !== 'editContent') {
+    if (!form.title.trim()) {
+      return '标题不能为空'
+    }
+    if (!form.description.trim()) {
+      return '适用场景不能为空'
+    }
+    if (form.targets.length === 0) {
+      return '适用端至少选择一个'
+    }
   }
-  if (!form.description.trim()) {
-    return '适用场景不能为空'
-  }
-  if (form.targets.length === 0) {
-    return '适用端至少选择一个'
-  }
-  if (formKind.value === 'create' && !form.content.trim()) {
-    return '正文不能为空（请导入本地文件）'
+  if ((formKind.value === 'create' || formKind.value === 'editContent') && !form.content.trim()) {
+    return '正文不能为空'
   }
   return ''
 }
@@ -688,6 +662,14 @@ async function submitForm() {
         targets: [...form.targets],
       }
       const updated = await store.updateMeta(formAssetId.value, meta)
+      if (detail.value?.id === updated.id) {
+        detail.value = updated
+      }
+    } else if (formKind.value === 'editContent' && formAssetId.value != null) {
+      const updated = await store.overwriteContent(formAssetId.value, {
+        content: form.content,
+        sourceFilename: form.sourceFilename,
+      })
       if (detail.value?.id === updated.id) {
         detail.value = updated
       }
@@ -772,7 +754,7 @@ async function deleteAsset(item: FunctionMapAssetListItem | FunctionMapAsset) {
       <header class="fm-header">
       <div class="fm-header-title">
         <h1>Function Map 资产库</h1>
-        <p>全局可复用的上下文卡片：标题、适用场景、正文、适用端。标题/适用场景/适用端可在线编辑，正文只能本地文本导入覆盖。</p>
+        <p>全局可复用的上下文卡片：标题、适用场景、正文、适用端均可维护；正文可直接填写或用本地文本导入覆盖。</p>
       </div>
       <button type="button" class="fm-primary" @click="openCreate">新建 Function Map</button>
     </header>
@@ -819,7 +801,7 @@ async function deleteAsset(item: FunctionMapAssetListItem | FunctionMapAsset) {
 
       <p v-if="store.loading" class="fm-empty">加载中…</p>
       <p v-else-if="store.assets.length === 0" class="fm-empty">
-        暂无 Function Map 资产，点击右上角「新建 Function Map」导入第一张卡片。
+        暂无 Function Map 资产，点击右上角「新建 Function Map」创建第一张卡片。
       </p>
 
       <div
@@ -1008,14 +990,6 @@ async function deleteAsset(item: FunctionMapAssetListItem | FunctionMapAsset) {
       </div>
     </div>
 
-    <input
-      ref="overwriteInput"
-      type="file"
-      accept=".md,.txt,.json"
-      class="fm-hidden-file"
-      @change="onOverwriteFile"
-    />
-
     <!-- 详情 -->
     <div v-if="detail" class="fm-overlay" @click.self="closeDetail">
       <div class="fm-drawer">
@@ -1037,7 +1011,7 @@ async function deleteAsset(item: FunctionMapAssetListItem | FunctionMapAsset) {
           <div class="fm-field">
             <span class="fm-label">来源</span>
             <span class="fm-muted">
-              本地导入{{ detail.sourceFilename ? `（${detail.sourceFilename}）` : '' }} · 更新于 {{ formatTime(detail.updatedAt) }}
+              {{ detail.sourceType === 'manual' ? '直接填写' : '本地导入' }}{{ detail.sourceFilename ? `（${detail.sourceFilename}）` : '' }} · 更新于 {{ formatTime(detail.updatedAt) }}
             </span>
           </div>
           <div class="fm-field">
@@ -1057,28 +1031,26 @@ async function deleteAsset(item: FunctionMapAssetListItem | FunctionMapAsset) {
         <footer class="fm-drawer-foot">
           <button type="button" class="fm-secondary" @click="openEditMeta(detail)">编辑信息</button>
           <button type="button" class="fm-secondary" @click="openMountPopup(detail)">挂载</button>
-          <button type="button" class="fm-secondary" :disabled="overwriting" @click="triggerOverwrite">
-            {{ overwriting ? '覆盖中…' : '导入覆盖正文' }}
-          </button>
+          <button type="button" class="fm-secondary" @click="openEditContent(detail)">编辑正文</button>
           <button type="button" class="fm-secondary" @click="exportAsset(detail)">导出</button>
           <button type="button" class="fm-secondary danger" @click="deleteAsset(detail)">删除</button>
         </footer>
       </div>
     </div>
 
-    <!-- 新建 / 编辑信息表单 -->
+    <!-- 新建 / 编辑信息 / 编辑正文表单 -->
     <div v-if="showForm" class="fm-overlay" @click.self="closeForm">
       <div class="fm-modal">
         <header class="fm-drawer-head">
-          <h2>{{ formKind === 'editMeta' ? '编辑信息' : '新建 Function Map' }}</h2>
+          <h2>{{ formKind === 'editMeta' ? '编辑信息' : formKind === 'editContent' ? '编辑正文' : '新建 Function Map' }}</h2>
           <button type="button" class="fm-close" @click="closeForm">×</button>
         </header>
         <div class="fm-form">
-          <label class="fm-form-row">
+          <label v-if="formKind !== 'editContent'" class="fm-form-row">
             <span class="fm-label">标题 <em>*</em></span>
             <input v-model="form.title" type="text" placeholder="例如：App 账号与登录态说明" />
           </label>
-          <label class="fm-form-row">
+          <label v-if="formKind !== 'editContent'" class="fm-form-row">
             <span class="fm-label">适用场景 <em>*</em></span>
             <textarea
               v-model="form.description"
@@ -1086,7 +1058,7 @@ async function deleteAsset(item: FunctionMapAssetListItem | FunctionMapAsset) {
               placeholder="说明这份资产适合什么场景，是自动发现的核心判断依据"
             ></textarea>
           </label>
-          <div class="fm-form-row">
+          <div v-if="formKind !== 'editContent'" class="fm-form-row">
             <span class="fm-label">适用端 <em>*</em></span>
             <div class="fm-filter-group">
               <button
@@ -1100,26 +1072,25 @@ async function deleteAsset(item: FunctionMapAssetListItem | FunctionMapAsset) {
               </button>
             </div>
           </div>
-          <div v-if="formKind === 'create'" class="fm-form-row">
+          <div v-if="formKind === 'create' || formKind === 'editContent'" class="fm-form-row">
             <span class="fm-label">正文 <em>*</em></span>
             <div class="fm-upload">
               <input type="file" accept=".md,.txt,.json" @change="onFileChange" />
-              <span v-if="form.sourceFilename" class="fm-muted">已导入：{{ form.sourceFilename }}</span>
-              <span class="fm-muted">支持 .md / .txt / .json 文本文件</span>
+              <span v-if="form.sourceFilename" class="fm-muted">来源文件：{{ form.sourceFilename }}</span>
+              <span class="fm-muted">可直接填写；导入 .md / .txt / .json 会覆盖下方正文</span>
             </div>
             <textarea
               v-model="form.content"
               rows="8"
-              placeholder="导入本地文件解析后的正文，或直接粘贴"
+              placeholder="直接填写正文，或导入本地文本文件"
             ></textarea>
           </div>
-          <p v-else class="fm-muted">正文不在这里编辑：关闭后用「导入覆盖正文」替换。</p>
           <p v-if="formError" class="fm-error">{{ formError }}</p>
         </div>
         <footer class="fm-drawer-foot">
           <button type="button" class="fm-secondary" @click="closeForm">取消</button>
           <button type="button" class="fm-primary" :disabled="submitting" @click="submitForm">
-            {{ submitting ? '提交中…' : (formKind === 'editMeta' ? '保存' : '创建资产') }}
+            {{ submitting ? '提交中…' : (formKind === 'create' ? '创建资产' : '保存') }}
           </button>
         </footer>
       </div>
@@ -1604,10 +1575,6 @@ async function deleteAsset(item: FunctionMapAssetListItem | FunctionMapAsset) {
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 8px;
-}
-
-.fm-hidden-file {
-  display: none;
 }
 
 .fm-subtabs {

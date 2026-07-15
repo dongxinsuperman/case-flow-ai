@@ -149,6 +149,17 @@ async def test_create_asset_persists_and_maps_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_asset_with_direct_content_marks_manual_source() -> None:
+    session = _FakeSession()
+    payload = FunctionMapAssetCreateIn(
+        title="直接填写的 Map", description="手写说明", content="正文内容", targets=["app"]
+    )
+    out = await service.create_asset(session, payload)  # type: ignore[arg-type]
+    assert out.source_type == "manual"
+    assert out.source_filename is None
+
+
+@pytest.mark.asyncio
 async def test_create_asset_duplicate_title_raises() -> None:
     session = _FakeSession([_asset(1, "已存在标题", ["app"])])
     payload = FunctionMapAssetCreateIn(
@@ -204,6 +215,20 @@ async def test_overwrite_content_replaces_content_only() -> None:
     assert out.content == "覆盖后的正文"
     assert out.title == "标题"
     assert out.source_filename == "new.md"
+    assert out.source_type == "local_import"
+
+
+@pytest.mark.asyncio
+async def test_direct_content_save_marks_manual_and_clears_source_filename() -> None:
+    asset = _asset(1, "标题", ["app"])
+    asset.source_filename = "old.md"
+    session = _FakeSession([asset])
+    out = await service.overwrite_content(
+        session, 1, FunctionMapAssetContentOverwriteIn(content="直接修改后的正文")
+    )  # type: ignore[arg-type]
+    assert out.content == "直接修改后的正文"
+    assert out.source_type == "manual"
+    assert out.source_filename is None
 
 
 @pytest.mark.asyncio

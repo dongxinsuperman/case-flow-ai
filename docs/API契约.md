@@ -39,10 +39,10 @@
 
 资产（管理，标准 camelCase 出入站）：
 - `GET /api/v1/function-map-assets?target=&keyword=&page=&page_size=` — 分页列出资产摘要（**不含正文**）。返回 `{ items:[{id, title, description, targets, updatedAt, referenceCount}], total, page, pageSize }`。
-- `POST /api/v1/function-map-assets` — 新建资产。体：`{ title, description, content, targets[], sourceFilename? }`；**标题全局唯一**，重名 400。返回资产详情。
+- `POST /api/v1/function-map-assets` — 新建资产。体：`{ title, description, content, targets[], sourceFilename? }`；正文可直接填写，带 `sourceFilename` 时表示本地文本导入；**标题全局唯一**，重名 400。返回资产详情。
 - `GET /api/v1/function-map-assets/{id}` — 资产详情，含正文 `content`、挂载引用 `mounts:[{scope,id,name}]` 与 `referenceCount`。
 - `PATCH /api/v1/function-map-assets/{id}` — 编辑元信息 `{ title, description, targets[] }`，正文不变；重名 400、不存在 404。
-- `PUT /api/v1/function-map-assets/{id}/content` — 导入覆盖正文。体：`{ content, sourceFilename? }`。
+- `PUT /api/v1/function-map-assets/{id}/content` — 保存正文。体：`{ content, sourceFilename? }`；不带 `sourceFilename` 为直接填写，带文件名为本地文本导入覆盖，均不改标题、适用场景、适用端。
 - `GET /api/v1/function-map-assets/{id}/export` — 导出 `{ title, description, content, targets }`（前端存为标题命名的 `.md`）。
 - `DELETE /api/v1/function-map-assets/{id}` — 删除资产（挂载关系随 FK `ON DELETE CASCADE` 清理；前端按 `referenceCount` 提示引用）。
 
