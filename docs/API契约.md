@@ -137,7 +137,7 @@
 - `POST /api/v1/executions/aihybrid/submit` — 提交 mixed case 到内置 AI Hybrid。体复用 `{ caseIds[], submissionName }`；不需要设备池，`cacheMode/retryMax` 会被忽略。
 - `POST /api/v1/aihybrid/callback/{callback_token}` — AI Hybrid 父回调入口，按标准执行批次写回 `case_work_items`。
 - `POST /api/v1/aihybrid/child-callback/{callback_token}` — AI Hybrid 子工具回调入口，只解除编排器内部等待，不写业务 case 状态。
-- `POST /aihybrid/api/submissions` — 内置 AI Hybrid 服务入口。它与外部执行器协议同构，接收 `{ submissionName, callbackUrl, functionMapContext?, functionMaps?, items[] }`；`items[]` 内也可带自己的 `functionMapContext`、`functionMaps`。Hybrid 合并顶层与 item 级上下文；结构化 Map 按 `asset_id` 去重、顶层优先。标准/快速执行由后端从显式挂载编译并注入，外部调用可传同形数据。结构化 Map 只用于按需发现设备绑定，正文仍原样透传给 AI Phone/Web/API。
+- `POST /aihybrid/api/submissions` — 内置 AI Hybrid 服务入口。它与外部执行器协议同构，接收 `{ submissionName, callbackUrl, functionMapContext?, functionMaps?, items[] }`；`items[]` 内也可带自己的 `functionMapContext`、`functionMaps`。Hybrid 合并顶层与 item 级上下文；结构化 Map 按 `asset_id` 去重、顶层优先。标准/快速执行由后端从显式挂载编译并注入，外部调用可传同形数据。Hybrid 逐份读取结构化 Map 正文并按 `targets` 作为对应端的编排参考，正文仍原样透传给 AI Phone/Web/API。
 - `POST /aihybrid/api/submissions/{submission_id}/cancel` — 停止 Hybrid 自身编排。体为可选 `{ caseIds[] }`，省略或空数组表示该 submission 的全部 case；响应 `{ submissionId, acceptedCaseIds[] }` 只确认 Hybrid 已接受本地停止。它不会向已提交的 AI Phone/Web 子任务发取消、查询或等待请求；迟到子回调会被忽略，停止单元不产出报告或 item 完成/失败回调。只停部分 case 时，其余 case 仍可正常收尾并发送父终态。详见 [AI Hybrid 对外接口](AI-Hybrid对外接口.md)。
 - AI Hybrid 写 `executor="ai_hybrid"`、`platform="mixed"`；`needs_human` 映射为失败原因而不是新的执行状态。失败有报告时**会触发自动诊断修复**（总报告内嵌结构化证据 + 各失败端错误截图，`read_report(executor="ai_hybrid")` 无损解析，诊断/提 bug 逐端带图）。
 

@@ -30,6 +30,10 @@ async def react_step(
     """标准 ReAct 单步：模型看 goal + case + 工具规格 + 历史，直接给下一步决策。
 
     返回 None 表示 LLM 不可用（runner 走规则兜底）。其余异常统一收敛为 finish/needs_human。
+
+    Function Map 参考：function_map_catalog 给出全部挂载 Map 的 asset_id、标题、摘要和 targets；
+    主脑逐份调用 function_map 读取正文，按 targets 区分 app/web/api 适用端并作为编排参考，
+    但 Map 不替主脑决定流程。正文仍按工具渐进读取，避免首轮直接塞入所有内容。
     """
     client, llm_settings = llm_client(settings)
     if client is None or not getattr(llm_settings, "llm_model", ""):
@@ -114,8 +118,8 @@ def observe(result: HybridToolResult) -> dict[str, Any]:
     """
     raw = dict(result.raw or {})
     image_data_uri = raw.pop("image_data_uri", None)
-    # Function Map 是设备绑定的权威证据，不能把写在正文后段的绑定静默截断；其他工具仍
-    # 使用既有的上限防止大报告撑爆上下文。
+    # Function Map 是主脑编排所需的完整参考，不能把写在正文后段的端内信息或账号绑定静默截断；
+    # 其他工具仍使用既有的上限防止大报告撑爆上下文。
     max_str = None if result.tool == "function_map" else _MAX_STR
     observation: dict[str, Any] = {
         "tool": result.tool,

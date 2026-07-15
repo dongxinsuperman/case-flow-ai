@@ -7,13 +7,15 @@ ORCHESTRATOR_SYSTEM_PROMPT = """
 # 你能用的子工具（每个子执行器本身也是 agent；给 ai_api/ai_web/ai_phone 投递结构化四段：title / preconditions / steps / expected）
 - ai_api：用自然语言描述一个 HTTP 请求，由它组装并发起、校验响应。常用于探查（查数据 / 取 id / 查鉴权）、造数（建前置数据），也可做接口层断言。你要的是它交回的响应 / 字段；执行失败很正常，不等于 case 失败。**子 ai_api 需要一个可验证锚点才会发请求**，所以每次调用都在 expected 给一个锚点（探查 / 造数用轻锚点，如「返回 2xx 且响应含 uid」「创建成功」；断言才写真实通过标准）。不能操作 UI。
 - ai_web：操作浏览器 / 网页 / 业务后台。**preconditions 第一句必须是「打开【业务平台名】平台」**，它会自动解析该平台 URL 并免登录。不能测 App、不能直接调接口。
-- ai_phone：真机操作 App。**preconditions 第一句必须是固定冷启动话术「关闭 App「【目标App名】」（杀进程）后重新打开 App「【目标App名】」」**（只有「」内的 App 名可变，其余原文固定；如「关闭 App「示例 App」（杀进程）后重新打开 App「示例 App」」）——没有这句子执行器不会冷启动。App 内怎么操作由 functionMap + 它的 VLM 决定，你只写场景步骤。不能测网页、不能直接调接口。
+- ai_phone：真机操作 App。**preconditions 第一句必须是固定冷启动话术「关闭 App「【目标App名】」（杀进程）后重新打开 App「【目标App名】」」**（只有「」内的 App 名可变，其余原文固定；如「关闭 App「示例 App」（杀进程）后重新打开 App「示例 App」」）——没有这句子执行器不会冷启动。App 内执行仍由子执行器 Agent 与它的 VLM 自主完成；你可以参考适用于 app 端的 Function Map，为子任务提供充分上下文和校验目标，但不要把 Map 当成必须照抄的固定脚本。不能测网页、不能直接调接口。
 - report_reader：分层读取子任务报告（已归一化为文字块/截图块索引）：outline 看结构 → read 翻页 / search 定位 / image 看截图。截图会作为真实图片附给你看，别凭空猜图里有什么。
-- function_map：按需读取本次挂载 Function Map 的完整正文，仅用于判断「账号/角色 → 设备」绑定；留空返回目录。不要用它决定 App 页面操作细节。
+- function_map：读取本次挂载 Function Map 的完整正文。你需要覆盖读取 function_map_catalog 中的全部 Map；留空返回目录，给 asset_id（或 title）返回该资产完整正文和适用端 targets（不截断）。Map 是帮助你理解任务、编排和调用子执行器的参考信息，不是固定流程或强制规则。
 
 # 你的输入
 - goal / title / preconditions / steps_text / expected_result
-- function_map_catalog：挂载 Map 的目录（asset_id / 标题 / 简介 / targets）。只准用于选机：先从目录找可能的账号/角色/设备映射，再用 function_map 按 asset_id 读正文；targets 明确只为 web/api 的不能用于 App 选机，含 app 或端未知的可判断。
+- function_map_catalog：本次挂载 Map 的完整目录（asset_id / 标题 / 简介 / targets）。目录列出了本次任务可读的全部 Map；你需要用 function_map 按 asset_id 逐份读取完整正文，让所有传入 Map 的信息都能作为本次任务的参考，不能只读取账号/设备映射类 Map。
+- Map 的端归属：targets 表示这份 Map 可参考到哪些端，不表示固定执行流程。只含 app / web / api 的 Map 只用于对应端参考；多端 Map 可用于其列出的多个端。targets 为空或未知时，不得擅自断言它属于某个端，也不得仅凭猜测跨端套用。
+- Map 的角色：Map 永远是参考信息。你要结合 case、全部 Map 和已有 observation 自主判断怎样编排、调用哪些子执行器以及传递哪些参数；不要让 Map 替你决定流程、调用顺序或最终结论。用户的明确要求与 case 目标优先。
 - aiphone_devices：AI Phone 设备实时快照，只用于把已知绑定对齐到真实 alias，不是让你随便挑设备；真正占用状态由派发层复查。
 - aiphone_devices_error：设备快照暂不可得。它不改变规则：若 Map 已明确绑定仍需填写 device_alias，派发层会再次校验；没有绑定才走默认设备池。
 - 完整 functionMap 仍会由系统透传给子执行器。目标 App 名 / 业务平台名从 case 文本里取；取不到就是缺证据。
@@ -33,7 +35,7 @@ ORCHESTRATOR_SYSTEM_PROMPT = """
 2. 允许多轮调用、重试、换工具交叉验证；子失败不等于任务失败。重试 = 再来一次 call_tool（换更好的输入）。
 3. grounding：只有当你能用「已落地证据」（goal/steps/preconditions/已有 observation）填满某工具的必填输入时才调它；
    填不出、目标 App/业务平台名/关键请求要素拿不到、或超出所有工具能力 → 绝不硬造/幻觉输入，直接 finish 且 verdict=needs_human，说明缺什么。
-4. 你决定「用哪个端、打开哪个 App / 哪个业务平台」（写进 preconditions 第一句：ai_phone 冷启动、ai_web 打开平台），但不决定 App/页面内的操作细节（那由 functionMap + 子执行器自行决定）。
+4. 你自主决定「用哪个端、打开哪个 App / 哪个业务平台」（写进 preconditions 第一句：ai_phone 冷启动、ai_web 打开平台）以及如何组织子任务输入。可以参考对应 targets 的 Map 让调用更充分、细致，但不要跨端套用 Map，也不要把 Map 当成固定操作脚本；子执行器仍会结合收到的上下文自主执行。
 5. 循环允许：case 语义可能需要多次调用同一/不同工具（如 api→app→web→app）；只要下一步是 case 语义必需就继续。
 6. 该收敛就收敛：拿到足够证据就 finish；同一工具同样输入已反复失败且无新证据时，换输入 / 换工具 / 直接 finish，不要原地打转。
    「API/Web 通过但 App 失败」这类应判 failed，并在归因里点明矛盾点。
@@ -118,7 +120,7 @@ TOOL_SPECS = [
                 },
                 "steps": {
                     "type": "string",
-                    "description": "App 内场景操作步骤与校验点。页面细节由 functionMap 决定，不用写死。",
+                    "description": "App 内场景操作步骤与校验点。可参考 targets 含 app 的 Function Map 提供充分信息，但 Map 不是固定流程，子执行器仍自主执行。",
                 },
                 "expected": {"type": "string", "description": "这一片的预期结果（屏幕/状态的可判断结果）。"},
                 "platform": {
@@ -168,7 +170,13 @@ TOOL_SPECS = [
     },
     {
         "name": "function_map",
-        "description": "按需读取本次挂载 Function Map 的完整正文，仅用于账号/角色到设备的绑定判断。先读输入中的 function_map_catalog；不带 asset_id 返回目录，带 asset_id（或 title）返回完整正文。",
+        "description": (
+            "逐份读取本次挂载 Function Map 的完整正文（不截断）。主脑需要覆盖 function_map_catalog 中的全部资产，"
+            "把正文作为理解任务、编排和调用子执行器的参考；不带 asset_id 返回目录。"
+            "每次正文结果都带适用端 targets：app/web/api Map 只参考到对应端，多端 Map 可参考到其列出的多个端，"
+            "targets 为空或未知时不得擅自归类或凭猜测跨端套用。Map 不是固定流程或强制规则，最终由主脑自主决策。"
+            "若正文包含本步账号/角色到设备的明确映射，仍按既有 ai_phone.device_alias 设备硬锁规则处理。"
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

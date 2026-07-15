@@ -134,7 +134,12 @@ class ReportReaderTool:
 
 
 class FunctionMapTool:
-    """供 Hybrid 主脑渐进式读取挂载 Map；只用于设备绑定，不替子执行器解释业务操作。"""
+    """逐份读取本次挂载的 Function Map，供 Hybrid 主脑完整参考。
+
+    不给 asset_id 返回含 targets 的完整目录；给 asset_id/title 返回该资产的完整正文与 targets。
+    主脑读取全部资产后按 app/web/api 端归属参考，并继续自主决定编排；账号/设备映射仍沿用
+    既有 ai_phone.device_alias 硬锁规则。
+    """
 
     name = "function_map"
 

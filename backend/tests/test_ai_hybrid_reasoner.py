@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.ai_hybrid import reasoner
+from app.services.ai_hybrid.prompts import ORCHESTRATOR_SYSTEM_PROMPT, TOOL_SPECS
 from app.services.ai_hybrid.schemas import HybridInput, HybridToolResult
 
 
@@ -85,6 +86,26 @@ async def test_react_step_receives_map_catalog_and_snapshot_error(monkeypatch: p
     payload = json.loads(captured[0]["messages"][1]["content"])
     assert payload["function_map_catalog"] == [{"asset_id": 7, "title": "账号设备", "description": "", "targets": ["app"]}]
     assert payload["aiphone_devices_error"] == "device_snapshot_error: unavailable"
+
+
+def test_orchestrator_prompt_reads_all_maps_as_target_scoped_references() -> None:
+    prompt = ORCHESTRATOR_SYSTEM_PROMPT
+    assert "覆盖读取 function_map_catalog 中的全部 Map" in prompt
+    assert "Map 永远是参考信息" in prompt
+    assert "只含 app / web / api 的 Map 只用于对应端参考" in prompt
+    assert "不要让 Map 替你决定流程、调用顺序或最终结论" in prompt
+    assert "只准用于选机" not in prompt
+    assert "仅用于判断「账号/角色 → 设备」绑定" not in prompt
+
+    function_map_spec = next(spec for spec in TOOL_SPECS if spec["name"] == "function_map")
+    description = str(function_map_spec["description"])
+    assert "主脑需要覆盖 function_map_catalog 中的全部资产" in description
+    assert "每次正文结果都带适用端 targets" in description
+    assert "仍按既有 ai_phone.device_alias 设备硬锁规则处理" in description
+
+    # 既有账号→设备硬锁规则必须保持，不因 Map 扩大为全量参考而被弱化。
+    assert "只有 Map 或 case 能唯一确定「本步骤账号/角色 → 某 alias」时才填 ai_phone.device_alias" in prompt
+    assert "快照失败不能把已有绑定改回默认池" in prompt
 
 
 def test_function_map_observation_keeps_full_binding_evidence() -> None:

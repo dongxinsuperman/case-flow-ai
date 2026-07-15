@@ -17,7 +17,7 @@ class HybridInput(BaseModel):
     steps_text: str = ""
     expected_result: str = ""
     function_map_context: str = ""
-    # 结构化 Function Map 目录（含 targets/description/content），供主脑选机/渐进式发现。
+    # 结构化 Function Map 集合（含 targets/description/content），供主脑逐份完整读取并按端参考。
     function_maps: list[dict[str, Any]] = Field(default_factory=list)
     source_ref: str = ""
 

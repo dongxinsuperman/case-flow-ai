@@ -1,7 +1,8 @@
-"""Hybrid 主脑按需读取 Function Map 的目录和完整正文。
+"""Hybrid 主脑读取完整参考 Function Map 的目录和正文。
 
-结构化 maps 是首选输入；兼容外部只传 functionMapContext 的旧调用。两者同时存在时
-合并去重，无法识别边界的旧文本整体保留为一个块，绝不静默丢弃上下文。
+结构化 maps 是首选输入；其中的 targets 明确每份 Map 的 app/web/api 适用端。兼容外部只传
+functionMapContext 的旧调用；两者同时存在时合并去重，无法识别边界的旧文本整体保留为一个块，
+绝不静默丢弃上下文。
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ _ID_RE = re.compile(r"^资产 ID:\s*(?P<id>.*)$", re.MULTILINE)
 
 
 def build_catalog(function_maps: list[dict[str, Any]] | None, context: str = "") -> list[dict[str, Any]]:
-    """返回无正文的目录，供模型先选择是否需要读取某份 Map。"""
+    """返回无正文的完整目录，供模型再逐份读取每个 Map。"""
     return [
         {
             "asset_id": entry.get("asset_id"),
@@ -28,7 +29,7 @@ def build_catalog(function_maps: list[dict[str, Any]] | None, context: str = "")
 def read_block(
     function_maps: list[dict[str, Any]] | None, context: str, wanted: str
 ) -> dict[str, Any] | None:
-    """按 asset_id 或标题返回整份正文，不截断。"""
+    """按 asset_id 或标题返回一份完整正文与适用端，不截断。"""
     target = str(wanted or "").strip().lower()
     if not target:
         return None

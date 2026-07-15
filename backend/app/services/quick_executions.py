@@ -395,7 +395,7 @@ async def _run_executor_submit(
             top_context = await compile_quick_context(session, session_id, spec.target)
             if top_context.context:
                 request_payload["functionMapContext"] = top_context.context
-            # Hybrid 主脑需要结构化目录做选机/端过滤；其他执行器只消费拼接上下文。
+            # Hybrid 主脑逐份读取结构化 Map 正文、按 targets 分端参考；其他执行器只消费拼接上下文。
             if spec.key == "ai_hybrid" and top_context.maps:
                 request_payload["functionMaps"] = top_context.maps
 

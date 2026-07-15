@@ -68,7 +68,7 @@ Case Flow 根据本次 Case 关联的二级需求，读取：
 | AI API | `API` 卡片 |
 | AI Hybrid | `App`、`Web`、`API` 卡片 |
 
-AI Hybrid 收到当前有效的 `functionMapContext` 后，在调用 AI Phone、AI Web 或 AI API 子工具时继续透传同一份上下文。Hybrid 不重新发现、不拆分，也不裁剪 Function Map。
+AI Hybrid 收到当前有效的 `functionMapContext` 后，在调用 AI Phone、AI Web 或 AI API 子工具时继续透传同一份上下文。它还接收同一批资产的结构化 `functionMaps`：模型先看到资产 ID、标题、简介和 `targets` 目录，再用 `function_map` 工具逐份读取全部正文。正文按 `targets` 仅作为对应 App、Web、API 子任务的参考；不跨端套用，也不把 Map 当成固定流程或最终结论。
 
 ## 资产边界格式
 

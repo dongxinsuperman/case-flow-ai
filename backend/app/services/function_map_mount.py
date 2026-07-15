@@ -50,8 +50,8 @@ _SOURCE_QUICK = "快速会话选择"
 class TopLevelContext:
     """顶层显式挂载编译结果。excluded_asset_ids 是适用端不匹配被排除的资产。
 
-    maps 与 context 来自同一批注入资产，供 Hybrid 主脑按 targets/description 做选机的
-    渐进式发现；正文仍只在它按 ID 主动读取时使用。
+    maps 与 context 来自同一批注入资产，供 Hybrid 主脑按 ID 逐份读取完整正文，并用 targets
+    明确 app/web/api 适用端后作为编排参考；主脑不再反解析 context 文本。
     """
 
     context: str = ""
