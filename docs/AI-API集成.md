@@ -56,6 +56,12 @@ AI API 要和 AI Phone / AI Web 在产品语义上统一，但实现上更轻：
 
 与 AI Phone / AI Web 一致，提交后先把 case 置为 `running`，旧报告、失败摘要、修复草稿、bug 草稿进入新一轮清理。不同点是 AI API 的“回调”由本进程内部完成，不依赖外部网络反向访问。
 
+## 内部停止
+
+标准和快速模式的 AI API batch 都有本进程内停止入口 `stop_aiapi_execution(submission_id, case_ids?)`。它取消当前执行 coroutine，并跳过后续 case；停止的单元不生成报告、不回写成功/失败终态、不触发诊断。这个入口**不新增 HTTP 路由**，也不适用于 `POST /api/v1/aiapi/run` 的对外 Direct Run。
+
+已经发出的 HTTP 请求没有通用的远端撤销协议：停止只中断 Case Flow 当前等待和后续调用，不推断目标服务是否已经处理请求或是否成功。这是明确暴露的链路边界，不会把未知结果兜底成某个执行状态。
+
 ## API 执行计划
 
 模型输出必须是结构化 JSON，禁止让模型输出 shell、curl 字符串或自由文本请求。

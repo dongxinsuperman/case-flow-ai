@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from app.models.quick import QuickCase, QuickCaseBody, QuickCaseWorkItem
-from app.services import quick_executions
-from app.services.ai_api import AIAPIExecutionResult
+from app.services import executions, quick_executions
+from app.services.ai_api import AIAPIExecutionResult, runtime as aiapi_runtime
 
 
 class _FakeSession:
@@ -120,3 +121,50 @@ async def test_quick_aiapi_item_execution_persists_report_and_updates_work_item(
     assert work_item.bug_url is None
     assert work_item.external_submission_id == "local-quick-aiapi-test"
     assert "Bearer real-token" in next((tmp_path / "aiapi_reports").glob("*.html")).read_text()
+
+
+@pytest.mark.asyncio
+async def test_quick_aiapi_stop_cancels_current_call_without_writing_result(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = SimpleNamespace(id=18, clean_title="停止 Quick API", raw_title="停止 Quick API", manual=False)
+    body = SimpleNamespace(preconditions="", steps_text="调用慢接口", expected_result="")
+    work_item = SimpleNamespace()
+    item = SimpleNamespace(case_id=18, raw_item={}, state="queued", report_url=None)
+    batch = SimpleNamespace(submission_id="local-quick-aiapi-stop-test", raw_request={}, started_at=None)
+    session = _FakeSession(case, body, work_item)
+    started = asyncio.Event()
+
+    class BlockingKernel:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def execute(self, _case_input: object) -> AIAPIExecutionResult:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("stopped Quick API call must not resume")
+
+    monkeypatch.setattr(quick_executions, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(quick_executions, "AIAPIKernel", BlockingKernel)
+    monkeypatch.setattr(executions, "_aiapi_security_config", lambda _settings: object())
+    monkeypatch.setattr(
+        executions,
+        "_write_aiapi_report",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("stopped Quick API must not write a report")),
+    )
+
+    aiapi_runtime.start("quick", batch.submission_id, [item.case_id])
+    task = asyncio.create_task(quick_executions._execute_aiapi_item(session, batch, item))  # type: ignore[arg-type]
+    aiapi_runtime.set_item_task("quick", batch.submission_id, item.case_id, task)
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    assert quick_executions.stop_aiapi_execution(batch.submission_id, [item.case_id]) == [item.case_id]
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert item.state == "queued"
+    assert item.report_url is None
+    assert session.commits == 0
+    assert not (tmp_path / "aiapi_reports").exists()
+    aiapi_runtime.finish("quick", batch.submission_id)

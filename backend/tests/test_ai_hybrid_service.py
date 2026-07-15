@@ -83,3 +83,51 @@ async def test_aihybrid_service_posts_item_and_submission_callbacks(
     assert status.state == "done"
     assert status.items[0].state == "success"
     service._submissions.clear()
+
+
+@pytest.mark.asyncio
+async def test_aihybrid_cancel_stops_current_run_without_report_or_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service._submissions.clear()
+    service._runtimes.clear()
+    started = asyncio.Event()
+    callbacks: list[dict[str, object]] = []
+
+    async def blocking_run_hybrid(_inp: object, _settings: object) -> HybridRunResult:
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled Hybrid run must not resume")
+
+    async def fail_write_report(*_args: object) -> str:
+        raise AssertionError("stopped Hybrid must not write a report")
+
+    async def fake_post_parent_callback(_url: str, payload: dict[str, object], _record: dict[str, object]) -> None:
+        callbacks.append(payload)
+
+    monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(service, "run_hybrid", blocking_run_hybrid)
+    monkeypatch.setattr(service, "write_hybrid_report", fail_write_report)
+    monkeypatch.setattr(service, "_post_parent_callback", fake_post_parent_callback)
+
+    response = await service.accept_submission(
+        HybridSubmitIn.model_validate(
+            {
+                "items": [{"caseId": "cf-1", "caseName": "停止中的 Hybrid", "runContent": "执行中"}],
+            }
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    accepted = await service.cancel_submission(response.submission_id, ["cf-1"])
+    await asyncio.sleep(0)
+
+    assert accepted == ["cf-1"]
+    status = service.get_submission(response.submission_id)
+    assert status is not None
+    assert status.state == "stopped"
+    assert status.items[0].state == "stopped"
+    assert status.items[0].report_url is None
+    assert callbacks == []
+    service._submissions.clear()
+    service._runtimes.clear()

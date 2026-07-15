@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,14 @@ from app.services.ai_hybrid.tools import (
     _render_run_content,
     _structured_fields,
 )
+
+
+class _SubmitResp:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, str]:
+        return {"submissionId": "child-submission"}
 
 
 def _locked_phone_input(alias: str, *, steps: str = "老师创建班级") -> HybridToolInput:
@@ -148,6 +157,156 @@ async def test_aiweb_tool_does_not_register_child_wait_when_callback_base_is_mis
     assert result.status == "failed"
     assert result.reason
     assert result.reason.startswith("callback_base_error:")
+
+
+@pytest.mark.asyncio
+async def test_external_executor_cancel_stops_hybrid_wait_without_cancelling_submitted_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waiting = asyncio.Event()
+    submitted = asyncio.Event()
+    forgotten: list[str] = []
+    requests: list[str] = []
+
+    async def fake_list_devices() -> object:
+        return SimpleNamespace(
+            source="service",
+            devices=[{"alias": "chrome-1", "platform": "chrome", "occupancy": "idle"}],
+        )
+
+    def fake_register(token: str, *_args: object, **_kwargs: object) -> asyncio.Event:
+        return waiting
+
+    def fake_forget(token: str) -> None:
+        forgotten.append(token)
+
+    class FakeClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> bool:
+            return False
+
+        async def post(self, url: str, json: object = None) -> _SubmitResp:
+            requests.append(url)
+            submitted.set()
+            return _SubmitResp()
+
+    monkeypatch.setattr(executions, "list_aiweb_devices", fake_list_devices)
+    monkeypatch.setattr(child_wait, "register", fake_register)
+    monkeypatch.setattr(child_wait, "forget", fake_forget)
+    monkeypatch.setattr("app.services.ai_hybrid.tools.httpx.AsyncClient", FakeClient)
+
+    task = asyncio.create_task(
+        AIWebTool().run(
+            HybridToolInput(
+                tool="ai_web",
+                input="检查订单",
+                raw={
+                    "title": "检查订单",
+                    "preconditions": "打开订单管理后台平台",
+                    "steps": "查看订单列表",
+                    "expected": "订单展示正常",
+                },
+            ),
+            SimpleNamespace(
+                aiweb_base_url="http://127.0.0.1:8009",
+                aiweb_callback_base_url="http://127.0.0.1:8800",
+                public_base_url="http://127.0.0.1:8800",
+                hybrid_max_wall_seconds=60,
+            ),
+        )
+    )
+    await asyncio.wait_for(submitted.wait(), timeout=1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(forgotten) == 1
+    assert requests == ["http://127.0.0.1:8009/api/submissions"]
+
+
+@pytest.mark.asyncio
+async def test_external_executor_cancel_during_submit_forgets_local_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    submitted = asyncio.Event()
+    child_wait._pending.clear()
+
+    async def fake_list_devices() -> object:
+        return SimpleNamespace(
+            source="service",
+            devices=[{"alias": "chrome-1", "platform": "chrome", "occupancy": "idle"}],
+        )
+
+    class BlockingClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "BlockingClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> bool:
+            return False
+
+        async def post(self, _url: str, json: object = None) -> _SubmitResp:
+            submitted.set()
+            await asyncio.Event().wait()
+            raise AssertionError("cancelled submit must not resume")
+
+    monkeypatch.setattr(executions, "list_aiweb_devices", fake_list_devices)
+    monkeypatch.setattr("app.services.ai_hybrid.tools.httpx.AsyncClient", BlockingClient)
+
+    task = asyncio.create_task(
+        AIWebTool().run(
+            HybridToolInput(
+                tool="ai_web",
+                input="检查订单",
+                raw={
+                    "title": "检查订单",
+                    "preconditions": "打开订单管理后台平台",
+                    "steps": "查看订单列表",
+                    "expected": "订单展示正常",
+                },
+            ),
+            SimpleNamespace(
+                aiweb_base_url="http://127.0.0.1:8009",
+                aiweb_callback_base_url="http://127.0.0.1:8800",
+                public_base_url="http://127.0.0.1:8800",
+                hybrid_max_wall_seconds=60,
+            ),
+        )
+    )
+    await asyncio.wait_for(submitted.wait(), timeout=1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert child_wait._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_child_callback_after_hybrid_stop_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    token = "stopped-child-token"
+    child_wait._pending.clear()
+    child_wait.register(token, "http://127.0.0.1:8009")
+    child_wait.forget(token)
+    monkeypatch.setattr(executions, "get_settings", lambda: SimpleNamespace(aiphone_base_url="http://127.0.0.1:8000"))
+
+    result = await executions.apply_aihybrid_child_callback(
+        token,
+        {
+            "event": "submission.item.terminal",
+            "submissionId": "child-submission",
+            "caseId": "child-case",
+            "state": "success",
+        },
+    )
+
+    assert result["handled"] is False
+    assert result["updated_case_ids"] == []
 
 
 @pytest.mark.asyncio

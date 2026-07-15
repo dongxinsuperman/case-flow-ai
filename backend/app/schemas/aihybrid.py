@@ -87,6 +87,23 @@ class HybridSubmitOut(BaseModel):
     items: list[HybridSubmitItemOut] = Field(default_factory=list)
 
 
+class HybridCancelIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    case_ids: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("caseIds", "case_ids"),
+        serialization_alias="caseIds",
+    )
+
+
+class HybridCancelOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    submission_id: str = Field(serialization_alias="submissionId")
+    accepted_case_ids: list[str] = Field(default_factory=list, serialization_alias="acceptedCaseIds")
+
+
 class HybridSubmissionStatusItemOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

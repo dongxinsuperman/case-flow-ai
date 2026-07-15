@@ -32,6 +32,7 @@ from app.schemas.executions import (
 from app.services import execution_call_log
 from app.services import function_map_mount as function_map_mount_service
 from app.services.ai_api import AIAPICaseInput, AIAPIKernel, AIAPISecurityConfig
+from app.services.ai_api import runtime as aiapi_runtime
 from app.services.ai_api.schemas import AIAPIExecutionResult, ScenarioExecutionResult, StepExecutionResult
 from app.services.executor_platforms import (
     COVERAGE_EXEC_LANES,
@@ -307,8 +308,10 @@ async def submit_aiapi_execution(session: AsyncSession, payload: AIPhoneSubmitIn
     )
     await session.commit()
 
+    aiapi_runtime.start("standard", submission_id, case_ids)
     task = asyncio.create_task(_run_aiapi_batch(batch.id))
-    task.add_done_callback(lambda t: t.exception())
+    aiapi_runtime.set_batch_task("standard", submission_id, task)
+    task.add_done_callback(lambda task: _finish_aiapi_task("standard", submission_id, task))
 
     return AIPhoneSubmitOut(
         submission_id=submission_id,
@@ -687,32 +690,49 @@ async def _run_aiapi_batch(batch_id: int) -> None:
         batch = await session.get(AIPhoneExecutionBatch, batch_id)
         if batch is None or batch.executor != "ai_api":
             return
-        batch.status = "running"
-        await session.commit()
+        try:
+            batch.status = "running"
+            await session.commit()
 
-        rows = await session.execute(
-            select(AIPhoneExecutionItem)
-            .where(AIPhoneExecutionItem.batch_id == batch_id)
-            .order_by(AIPhoneExecutionItem.id)
-        )
-        items = list(rows.scalars().all())
-        for item in items:
-            await _execute_aiapi_item(session, batch, item)
+            rows = await session.execute(
+                select(AIPhoneExecutionItem)
+                .where(AIPhoneExecutionItem.batch_id == batch_id)
+                .order_by(AIPhoneExecutionItem.id)
+            )
+            items = list(rows.scalars().all())
+            for item in items:
+                if aiapi_runtime.is_stopped("standard", batch.submission_id, item.case_id):
+                    continue
+                task = asyncio.create_task(_execute_aiapi_item(session, batch, item))
+                aiapi_runtime.set_item_task("standard", batch.submission_id, item.case_id, task)
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    if aiapi_runtime.is_stopped("standard", batch.submission_id, item.case_id):
+                        continue
+                    raise
+                finally:
+                    aiapi_runtime.clear_item_task("standard", batch.submission_id, item.case_id)
 
-        counts = {
-            "success": sum(1 for item in items if item.state == "success"),
-            "failed": sum(1 for item in items if item.state == "failed"),
-        }
-        batch.status = "done"
-        batch.finished_at = batch.finished_at or func.now()
-        batch.raw_callback = {
-            "event": "submission.terminal",
-            "submissionId": batch.submission_id,
-            "submissionState": "done",
-            "counts": counts,
-        }
-        batch.summary_report_url = next((item.report_url for item in items if item.state == "failed"), None)
-        await session.commit()
+            counts = {
+                "success": sum(1 for item in items if item.state == "success"),
+                "failed": sum(1 for item in items if item.state == "failed"),
+            }
+            batch.status = "done"
+            batch.finished_at = batch.finished_at or func.now()
+            batch.raw_callback = {
+                "event": "submission.terminal",
+                "submissionId": batch.submission_id,
+                "submissionState": "done",
+                "counts": counts,
+            }
+            batch.summary_report_url = next((item.report_url for item in items if item.state == "failed"), None)
+            await session.commit()
+        except asyncio.CancelledError:
+            # 停止不是执行结果：不写报告、不回写成功或失败。
+            return
+        finally:
+            aiapi_runtime.finish("standard", batch.submission_id)
 
 
 async def _execute_aiapi_item(
@@ -735,6 +755,8 @@ async def _execute_aiapi_item(
     case_input = _aiapi_case_input(case, body, function_map_context)
     kernel = AIAPIKernel(security_config=_aiapi_security_config(settings))
     result = await kernel.execute(case_input)
+    if aiapi_runtime.is_stopped("standard", batch.submission_id, item.case_id):
+        raise asyncio.CancelledError
     report_url = _write_aiapi_report(settings, batch.submission_id, item.case_id, result.report_html)
     item_state = "success" if result.status == "success" else "failed"
     item.state = item_state
@@ -759,6 +781,23 @@ async def _execute_aiapi_item(
 
         task = asyncio.create_task(auto_diagnose_case(item.case_id))
         task.add_done_callback(lambda t: t.exception())
+
+
+def stop_aiapi_execution(submission_id: str, case_ids: list[int] | None = None) -> list[int]:
+    """AI API 内部停止入口；当前不对外暴露 HTTP 路由。"""
+    return aiapi_runtime.stop("standard", submission_id, case_ids)
+
+
+def _finish_aiapi_task(
+    mode: aiapi_runtime.ExecutionMode,
+    submission_id: str,
+    task: asyncio.Task[object],
+) -> None:
+    aiapi_runtime.finish(mode, submission_id)
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        return
 
 
 def _aiapi_case_input(

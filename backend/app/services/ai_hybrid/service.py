@@ -24,6 +24,7 @@ from app.services.ai_hybrid.schemas import HybridInput, HybridRunResult
 logger = logging.getLogger(__name__)
 
 _submissions: dict[str, dict[str, Any]] = {}
+_runtimes: dict[str, dict[str, Any]] = {}
 
 
 async def accept_submission(payload: HybridSubmitIn) -> HybridSubmitOut:
@@ -57,13 +58,65 @@ async def accept_submission(payload: HybridSubmitIn) -> HybridSubmitOut:
         },
     }
     _submissions[submission_id] = record
+    runtime: dict[str, Any] = {
+        "submission_task": None,
+        "item_tasks": {},
+        "stopped_indexes": set(),
+        "stop_all": False,
+    }
+    _runtimes[submission_id] = runtime
     task = asyncio.create_task(_run_submission(submission_id, payload))
+    runtime["submission_task"] = task
     task.add_done_callback(_consume_task_exception)
     return HybridSubmitOut(
         submission_id=submission_id,
         submission_name=submission_name,
         items=[HybridSubmitItemOut(case_id=item.case_id, platform="mixed", state="queued") for item in payload.items],
     )
+
+
+async def cancel_submission(submission_id: str, case_ids: list[str] | None = None) -> list[str] | None:
+    """停止当前 Hybrid 编排；不追踪已派发外部子执行器的后续状态。"""
+    record = _submissions.get(submission_id)
+    runtime = _runtimes.get(submission_id)
+    if record is None or runtime is None:
+        return None
+
+    requested = {str(case_id) for case_id in case_ids or []}
+    selected_indexes = [
+        index
+        for index, item in enumerate(record.get("items") or [])
+        if not requested or str(item.get("case_id") or "") in requested
+    ]
+    if requested and not selected_indexes:
+        raise ValueError("Hybrid submission 中未找到指定 case")
+
+    runtime["stopped_indexes"].update(selected_indexes)
+    accepted_case_ids: list[str] = []
+    for index in selected_indexes:
+        item = record["items"][index]
+        case_id = str(item["case_id"])
+        accepted_case_ids.append(case_id)
+        item.update(
+            {
+                "state": "stopped",
+                "report_url": None,
+                "status_reason": None,
+            }
+        )
+        task = runtime["item_tasks"].get(index)
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+
+    all_indexes = set(range(len(record.get("items") or [])))
+    if all_indexes and all_indexes <= runtime["stopped_indexes"]:
+        runtime["stop_all"] = True
+        record["state"] = "stopped"
+        task = runtime.get("submission_task")
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+
+    return accepted_case_ids
 
 
 def get_submission(submission_id: str) -> HybridSubmissionStatusOut | None:
@@ -91,86 +144,120 @@ def get_submission(submission_id: str) -> HybridSubmissionStatusOut | None:
 async def _run_submission(submission_id: str, payload: HybridSubmitIn) -> None:
     settings = get_settings()
     record = _submissions[submission_id]
+    runtime = _runtimes[submission_id]
     summary_report_url: str | None = None
     counts = {"success": 0, "failed": 0}
 
-    for index, item in enumerate(payload.items):
-        record_item = record["items"][index]
-        record_item["state"] = "running"
-        run_id = f"aihybrid-run-{uuid.uuid4().hex}"
-        try:
-            function_map_context = _effective_function_map_context(
-                payload.function_map_context,
-                item.function_map_context,
-            )
-            function_maps = _effective_function_maps(payload.function_maps, item.function_maps)
-            hybrid_input = _hybrid_input_from_item(item, function_map_context, function_maps)
-            result = await run_hybrid(
-                hybrid_input,
-                settings,
-            )
-        except Exception as exc:
-            result = HybridRunResult(
-                status="failed",
-                status_reason="hybrid_error",
-                final_summary=f"Hybrid 执行异常：{exc}",
-                child_results_payload=[],
-                reasoning_trace=[{"phase": "error", "error": str(exc)}],
-            )
+    try:
+        for index, item in enumerate(payload.items):
+            if index in runtime["stopped_indexes"]:
+                continue
+            task = asyncio.create_task(_run_item(submission_id, payload, index, item, settings))
+            runtime["item_tasks"][index] = task
+            try:
+                terminal_state, report_url = await task
+            except asyncio.CancelledError:
+                if index in runtime["stopped_indexes"]:
+                    continue
+                raise
+            finally:
+                runtime["item_tasks"].pop(index, None)
 
-        try:
-            report_url = await write_hybrid_report(settings, submission_id, item.case_id, result)
-        except Exception as exc:
-            logger.exception("failed to write AI Hybrid report")
-            report_url = None
-            result.status = "failed"
-            result.status_reason = "report_write_failed"
-            result.final_summary = f"Hybrid 报告生成失败：{exc}"
+            counts[terminal_state] += 1
+            if report_url and not summary_report_url:
+                summary_report_url = report_url
 
-        terminal_state = "success" if result.status == "success" else "failed"
-        counts[terminal_state] += 1
-        if terminal_state == "failed" and not summary_report_url:
-            summary_report_url = report_url
-        if terminal_state == "success" and not summary_report_url:
-            summary_report_url = report_url
-
-        record_item.update(
-            {
-                "state": terminal_state,
-                "report_url": report_url,
-                "status_reason": "needs_human" if result.status == "needs_human" else result.status_reason,
-                "run_id": run_id,
-                "raw_result": result.model_dump(mode="json"),
-            }
-        )
+        if runtime["stop_all"]:
+            return
+        record["state"] = "done"
+        record["summary_report_url"] = summary_report_url
         await _post_parent_callback(
             payload.callback_url,
             {
-                "event": "submission.item.terminal",
+                "event": "submission.terminal",
                 "submissionId": submission_id,
-                "caseId": item.case_id,
-                "platform": "mixed",
-                "state": terminal_state,
-                "statusReason": record_item["status_reason"],
-                "reportUrl": report_url,
-                "runId": run_id,
+                "submissionState": "done",
+                "summaryReportUrl": summary_report_url,
+                "counts": counts,
             },
             record,
         )
+    except asyncio.CancelledError:
+        # 停止不是失败结论：不写报告、不发父终态回调。
+        return
+    finally:
+        _runtimes.pop(submission_id, None)
 
-    record["state"] = "done"
-    record["summary_report_url"] = summary_report_url
+
+async def _run_item(
+    submission_id: str,
+    payload: HybridSubmitIn,
+    index: int,
+    item: Any,
+    settings: Any,
+) -> tuple[str, str | None]:
+    record = _submissions[submission_id]
+    runtime = _runtimes[submission_id]
+    record_item = record["items"][index]
+    record_item["state"] = "running"
+    run_id = f"aihybrid-run-{uuid.uuid4().hex}"
+    try:
+        function_map_context = _effective_function_map_context(
+            payload.function_map_context,
+            item.function_map_context,
+        )
+        function_maps = _effective_function_maps(payload.function_maps, item.function_maps)
+        hybrid_input = _hybrid_input_from_item(item, function_map_context, function_maps)
+        result = await run_hybrid(hybrid_input, settings)
+    except Exception as exc:
+        result = HybridRunResult(
+            status="failed",
+            status_reason="hybrid_error",
+            final_summary=f"Hybrid 执行异常：{exc}",
+            child_results_payload=[],
+            reasoning_trace=[{"phase": "error", "error": str(exc)}],
+        )
+
+    if index in runtime["stopped_indexes"]:
+        raise asyncio.CancelledError
+
+    try:
+        report_url = await write_hybrid_report(settings, submission_id, item.case_id, result)
+    except Exception as exc:
+        logger.exception("failed to write AI Hybrid report")
+        report_url = None
+        result.status = "failed"
+        result.status_reason = "report_write_failed"
+        result.final_summary = f"Hybrid 报告生成失败：{exc}"
+
+    if index in runtime["stopped_indexes"]:
+        raise asyncio.CancelledError
+
+    terminal_state = "success" if result.status == "success" else "failed"
+    record_item.update(
+        {
+            "state": terminal_state,
+            "report_url": report_url,
+            "status_reason": "needs_human" if result.status == "needs_human" else result.status_reason,
+            "run_id": run_id,
+            "raw_result": result.model_dump(mode="json"),
+        }
+    )
     await _post_parent_callback(
         payload.callback_url,
         {
-            "event": "submission.terminal",
+            "event": "submission.item.terminal",
             "submissionId": submission_id,
-            "submissionState": "done",
-            "summaryReportUrl": summary_report_url,
-            "counts": counts,
+            "caseId": item.case_id,
+            "platform": "mixed",
+            "state": terminal_state,
+            "statusReason": record_item["status_reason"],
+            "reportUrl": report_url,
+            "runId": run_id,
         },
         record,
     )
+    return terminal_state, report_url
 
 
 async def _post_parent_callback(url: str, payload: dict[str, Any], record: dict[str, Any]) -> None:

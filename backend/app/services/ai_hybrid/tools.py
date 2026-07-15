@@ -281,6 +281,10 @@ class ExternalExecutorTool:
                 response = await client.post(f"{base_url.rstrip('/')}/api/submissions", json=payload)
                 response.raise_for_status()
                 submitted = response.json()
+        except asyncio.CancelledError:
+            # 提交是否已到达子服务不追踪；立即丢弃 Hybrid 本地等待句柄。
+            child_wait.forget(token)
+            raise
         except Exception as exc:
             child_wait.forget(token)
             return HybridToolResult(
@@ -310,6 +314,10 @@ class ExternalExecutorTool:
                 reason="child_callback_timeout",
                 raw={"request": payload, "submitted": submitted},
             )
+        except asyncio.CancelledError:
+            # 只结束 Hybrid 自身的等待；已提交的外部子任务不取消、不查询。
+            child_wait.forget(token)
+            raise
 
         state = str(result.get("state") or "").lower()
         status = "success" if state in {"success", "passed", "pass"} else "failed"
